@@ -47,7 +47,10 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
             name = f"{stem}__{f['id'][-5:]}{ext}"
         claimed[name] = f["id"]
         known = index.get(name)
-        if known and known.get("id") == f["id"] and known.get("bytes") == f.get("bytes") and (dest / name).exists():
+        local = dest / name
+        # a local copy only counts when it is this file: the agent may have overwritten the name with a new picture
+        fresh = local.is_file() and (f.get("bytes") is None or local.stat().st_size == f.get("bytes"))
+        if known and known.get("id") == f["id"] and known.get("bytes") == f.get("bytes") and fresh:
             continue
         if known and known.get("id") == f["id"] and known.get("gone"):
             continue  # an overwritten older copy: its object no longer exists
@@ -57,6 +60,8 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
         if not url:
             continue
         if MAX_DOWNLOAD and (f.get("bytes") or 0) > MAX_DOWNLOAD:
+            if local.is_file() and not fresh:  # an older, smaller version of this name: never serve or reuse it
+                local.unlink()
             index[name] = {"id": f["id"], "bytes": f.get("bytes"), "created_at": f.get("created_at"),
                            "mime_type": f.get("mime_type"), "remote": True}
             continue

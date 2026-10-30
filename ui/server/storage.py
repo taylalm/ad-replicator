@@ -178,6 +178,43 @@ def list_keys(prefix: str) -> List[dict]:
     return out
 
 
+def put_raw(k: str, data: bytes) -> bool:
+    """An object outside the jobs/ layout (e.g. pieces of an upload under uploads/)."""
+    c = _client()
+    if not c:
+        return False
+    try:
+        import io
+        c.put_object(bucket(), k, content=io.BytesIO(data))
+        return True
+    except Exception as e:
+        _fail(e)
+        return False
+
+
+def get_raw(k: str) -> Optional[bytes]:
+    c = _client()
+    if not c:
+        return None
+    try:
+        return c.get_object(bucket(), k).read()
+    except Exception as e:
+        _fail(e)
+        return None
+
+
+def delete_keys(keys: List[str]) -> None:
+    c = _client()
+    if not c or not keys:
+        return
+    import tos
+    for i in range(0, len(keys), 1000):
+        try:
+            c.delete_multi_objects(bucket(), [tos.models2.ObjectTobeDeleted(k) for k in keys[i:i + 1000]], quiet=True)
+        except Exception as e:
+            _fail(e)
+
+
 def list_jobs() -> List[str]:
     """Job ids that have a job.json in the bucket."""
     c = _client()

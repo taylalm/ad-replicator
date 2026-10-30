@@ -21,7 +21,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let alive = true;
-    const check = () => api.health().then(() => alive && setBackendOk(true)).catch(() => alive && setBackendOk(false));
+    // one missed check is a network blip or a server instance starting: warn only after two in a row
+    let misses = 0;
+    const check = () => api.health()
+      .then(() => { misses = 0; if (alive) setBackendOk(true); })
+      .catch(() => { misses += 1; if (alive && misses >= 2) setBackendOk(false); });
     check();
     const iv = window.setInterval(check, 15000);
     return () => { alive = false; window.clearInterval(iv); };

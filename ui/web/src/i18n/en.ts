@@ -1,11 +1,11 @@
 /** Every UI string lives here. Add `vi.ts` with the same shape to translate. */
 export const en = {
   app: {
-    name: "Ad Replicator",
+    name: process.env.NEXT_PUBLIC_APP_NAME || "Ad Replicator",
     tagline: "Turn one proven ad into your own, with your product and new AI people.",
     nav: { history: "History", newVideo: "New video", docs: "How it works" },
     theme: { light: "Switch to light mode", dark: "Switch to dark mode" },
-    backendDown: "The local backend is not reachable. Start it with ui/start.sh and reload.",
+    backendDown: "The server is not answering right now. This page keeps retrying; if it lasts more than a minute, reload.",
     demoBadge: "Demo",
     loading: "Loading",
   },

@@ -233,6 +233,11 @@ async function sendFile<T>(path: string, file: File, note: string, jobId?: strin
     if (jobId) fd.append("job_id", jobId);
     last = await postForm<unknown>("/api/uploads/chunk", fd);
   }
+  // the last piece answers with the stored file; a count means the server lost pieces on the way
+  const done = last as { file_id?: string; path?: string; received?: number; total?: number } | null;
+  if (!done || (!done.file_id && !done.path)) {
+    throw new ApiError(0, `The upload did not finish (${done?.received ?? 0} of ${done?.total ?? total} pieces arrived). Upload the file again.`);
+  }
   return last as T;
 }
 

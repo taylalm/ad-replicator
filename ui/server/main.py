@@ -213,8 +213,8 @@ def create_job(body: NewJob):
     if missing:  # no built-in agent: the function must name its own agent, environment and vault
         raise HTTPException(503, f"This site is not set up yet: set {', '.join(missing)} in the function's environment "
                                  "variables and release it.")
-    upload = body.sample_upload or None
-    if upload:
+    upload = body.sample_upload  # an empty object is an upload that never finished, not "no upload"
+    if upload is not None:
         if not upload.get("file_id"):
             raise HTTPException(422, "The uploaded sample video is missing; upload it again.")
         if not re.search(r"\.(mp4|mov|m4v|webm)$", str(upload.get("filename", "")), re.I):
@@ -959,6 +959,26 @@ async def upload_chunk(chunk: UploadFile = File(...), upload_id: str = Form(...)
     if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", upload_id) or not (0 <= index < total <= 400):
         raise HTTPException(422, "Bad upload_id, index or total")
     jid = job_id or None
+    import storage
+    safe = _safe_name(filename)
+    if storage.enabled():  # several server instances: the pieces meet in the bucket, whichever instance gets each one
+        prefix = f"uploads/parts_{upload_id}/"
+        if not storage.put_raw(f"{prefix}{index:05d}", await chunk.read()):
+            raise HTTPException(502, f"Upload piece {index + 1} of {total} could not be stored: {storage.status().get('last_error')}")
+        keys = sorted(o["key"] for o in storage.list_keys(prefix))
+        if len(keys) < total:
+            return {"received": len(keys), "total": total}
+        updir = _upload_dir(jid)
+        updir.mkdir(parents=True, exist_ok=True)
+        dest = updir / f"{int(time.time())}_{safe}"
+        with open(dest, "wb") as out:
+            for k in keys:
+                data = storage.get_raw(k)
+                if data is None:
+                    raise HTTPException(502, "A piece of the upload could not be read back; upload the file again.")
+                out.write(data)
+        storage.delete_keys(keys)
+        return _send_upload(dest, safe, note, jid)
     parts = _upload_dir(jid) / f"parts_{upload_id}"
     parts.mkdir(parents=True, exist_ok=True)
     with open(parts / f"{index:05d}", "wb") as fh:
@@ -966,7 +986,6 @@ async def upload_chunk(chunk: UploadFile = File(...), upload_id: str = Form(...)
     have = sorted(parts.iterdir())
     if len(have) < total:
         return {"received": len(have), "total": total}
-    safe = _safe_name(filename)
     dest = parts.parent / f"{int(time.time())}_{safe}"
     with open(dest, "wb") as out:
         for part in have:
