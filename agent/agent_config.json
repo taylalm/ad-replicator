@@ -1,0 +1,87 @@
+{
+ "name": "Video Ads Replication Agent",
+ "description": "Print-on-demand personalized gifts UGC video replication agent, replicates TikTok/Reels style to generate compliant 9:16 promotional videos with product personalization, quality scoring and retry mechanism",
+ "model": {
+  "id": "glm-5-3-flash-260828"
+ },
+ "base_agent": "ark_agent_preview",
+ "context_management": [
+  {
+   "type": "compaction",
+   "compact_threshold": 192000
+  }
+ ],
+ "tools": [
+  {
+   "type": "agent_toolset_20260916",
+   "configs": [
+    {
+     "name": "bash",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "read",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "write",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "edit",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "glob",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "grep",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "web_fetch",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    },
+    {
+     "name": "web_search",
+     "enabled": true,
+     "permission_policy": {
+      "type": "always_allow"
+     }
+    }
+   ],
+   "default_config": {
+    "enabled": true,
+    "permission_policy": {
+     "type": "always_allow"
+    }
+   },
+   "name": "agent_toolset_20260916"
+  }
+ ],
+ "metadata": {
+  "profile": "generic"
+ }
+}
