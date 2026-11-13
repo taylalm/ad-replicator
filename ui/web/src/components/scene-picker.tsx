@@ -45,9 +45,11 @@ export function ScenePicker({ job, refreshKey, onUpdated }: { job: Job; refreshK
   const watch = useCallback(() => {
     if (poll.current) clearInterval(poll.current);
     setStatus({ state: "running" });
+    let misses = 0;  // several server instances: one that has not heard of this update answers "idle" for a moment
     poll.current = setInterval(async () => {
       const st: ExportState | null = await fetch(fileUrl(`/api/jobs/${encodeURIComponent(job.id)}/captions/export`)).then((r) => r.json()).catch(() => null);
       if (!st || st.state === "running") return;
+      if ((st.state as string) === "idle" && ++misses < 20) return;
       if (poll.current) clearInterval(poll.current);
       setStatus({ state: st.state, error: st.error });
       if (st.state === "done") updated.current?.();

@@ -270,8 +270,10 @@ export function ClipWorkbench({ job, onSend, onUpdated }: { job: Job; onSend: (t
   const watch = (first: ExportState) => {
     setRebuild(first);
     if (first.state !== "running") return;
+    let misses = 0;  // several server instances: one that has not heard of this rebuild answers "idle" for a moment
     const poll = setInterval(async () => {
       const st = await fetch(fileUrl(`/api/jobs/${encodeURIComponent(job.id)}/captions/export`)).then((r) => r.json()).catch(() => null);
+      if (st?.state === "idle" && ++misses < 20) return;
       if (st) setRebuild(st);
       if (!st || st.state !== "running") {
         clearInterval(poll);

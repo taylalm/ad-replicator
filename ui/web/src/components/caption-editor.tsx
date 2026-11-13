@@ -64,6 +64,7 @@ export function CaptionEditor({ jobId, onUpdated }: { jobId: string; onUpdated?:
     if (exp?.state !== "running") return;
     const id = setInterval(() => {
       captionsApi.status(jobId).then((st) => {
+        if ((st.state as string) === "idle") return;  // another server instance that has not heard of this export yet
         setExp(st);
         if (st.state === "done") { captionsApi.get(jobId).then((r) => { setEdits(r.edits); setDoc(r.doc); setBaseUrl(r.base_url); }); onUpdated?.(); }
       }).catch(() => undefined);
