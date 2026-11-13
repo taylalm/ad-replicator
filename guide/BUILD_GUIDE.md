@@ -661,6 +661,7 @@ Within a few minutes of a run:
 3. Paste the product page URL.
 4. Write the brief: audience, what to avoid, approved offer wording, CTA.
 5. Choose **Cost and speed** (Economy, Balanced or Best quality; it sets the video and image models, the resolution and the retakes per scene, each of which you can still change), the transitions between scenes, the caption mode and the approval mode, then click **Start**.
+   - **Personalized product images:** "The agent makes them" personalizes on the store page and captures its preview; "I'll upload them" skips that: upload one picture per personalized product (store preview, mockup or photo) and say whose it is. Use upload for product pages that are slow or turn a photo into a cartoon.
    - Footage of your own (an intro, an outro, a scene you filmed) can be added as a reference file with a note saying where it goes, e.g. "my intro, play first". The agent puts it in the ad as it is.
 
 **5.2 Approve the plan.**

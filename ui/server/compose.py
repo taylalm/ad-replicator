@@ -29,6 +29,7 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
     captions = (options or {}).get("captions") or "full"
     if captions not in ("full", "cta_only", "none"):
         captions = "full"
+    personalize = "upload" if (options or {}).get("personalize") == "upload" else "auto"
     transitions = (options or {}).get("transitions") or "mix"
     if transitions not in ("sample", "cut", "mix", "dissolve"):
         transitions = "mix"
@@ -55,6 +56,7 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
         f"CAPTIONS: {captions}",
         f"TRANSITIONS: {transitions}",
         f"RETAKES: {'no cap' if retakes == 0 else f'at most {retakes} per scene'}",
+        f"PERSONALIZE: {personalize}",
         f"VIDEO_MODEL: {video['label']} | {flags(video)}",
         f"IMAGE_MODEL: {image['label']} | {flags(image)}",
     ]

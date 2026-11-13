@@ -102,6 +102,18 @@ export const en = {
       placeholder: process.env.NEXT_PUBLIC_PRODUCT_PLACEHOLDER || "https://yourstore.com/products/...",
       help: "The page with the personalization options. The agent reads it once and never adds to cart.",
     },
+    productImages: {
+      label: "Personalized product images",
+      auto: "The agent makes them",
+      upload: "I'll upload them",
+      autoHint: "The agent fills in the personalization on the product page and captures the store's own preview. Usually 2-5 minutes; product pages that turn a photo into a cartoon can take longer or fail.",
+      uploadHint: "Faster and fully in your hands: upload one picture per personalized product as it should appear in the ad (the store preview, a mockup or a photo), and say whose it is and what it shows. The agent still reads the product page for the name, size and material, but does not personalize on it.",
+      add: "Add product pictures",
+      notePlaceholder: "Whose product and what it shows, e.g. Harper, brown socks, name on the book",
+      required: "Upload at least one picture of the personalized product, or let the agent make them.",
+      noteRequired: "Say whose product each picture shows (e.g. Harper, brown socks).",
+      busy: "A product picture is still uploading. Wait a moment, then continue.",
+    },
     titleField: { label: "Name this video (optional)", placeholder: process.env.NEXT_PUBLIC_TITLE_PLACEHOLDER || "Custom mug, holiday push" },
     references: {
       label: "Reference files (optional)",

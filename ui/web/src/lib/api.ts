@@ -274,7 +274,7 @@ export const api = {
   sampleLinkStatus: (id: string) => request<SampleLink>(`/api/sample-link/${encodeURIComponent(id)}`),
   createJob: (body: {
     title?: string; sample_url: string; sample_upload?: { file_id: string; filename: string; local_name?: string; source_url?: string } | null; product_url: string; requirements: string; budget: Budget;
-    options: { length_s: number; resolution: string; captions?: "full" | "cta_only" | "none"; video_model?: string; image_model?: string; transitions?: string; retakes?: number }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
+    options: { length_s: number; resolution: string; captions?: "full" | "cta_only" | "none"; video_model?: string; image_model?: string; transitions?: string; retakes?: number; personalize?: "auto" | "upload" }; auto_approve: boolean; step_approve?: boolean; references?: Reference[];
   }) => request<Job>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   uploadReference: (file: File, note: string): Promise<Reference> => sendFile("/api/uploads", file, note),
   uploadToJob: (id: string, file: File, note: string): Promise<SessionUpload> =>

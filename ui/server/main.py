@@ -57,6 +57,9 @@ class Options(BaseModel):
     transitions: str = Field("mix", pattern="^(sample|cut|mix|dissolve)$")
     # new takes one scene may get after its first take fails its check; 0 = no limit
     retakes: int = Field(1, ge=0, le=3)
+    # personalized product images: "auto" = the agent personalizes on the store page; "upload" = the user uploaded them
+    # (references whose note starts with "personalized product image") and the agent never runs the store page
+    personalize: str = Field("auto", pattern="^(auto|upload)$")
     video_model: str = Field("seedance-2.5", pattern="^seedance-(2\\.5|2\\.0|2\\.0-fast|2\\.0-mini)$")
     image_model: str = Field("seedream-5.0-pro", pattern="^seedream-5\\.0-(pro|flash)$")
     # optional: this job's agent-context compaction threshold (tokens, >= 50000); None = the agent's setting (cost tests)
@@ -264,6 +267,9 @@ def create_job(body: NewJob):
         raise HTTPException(422, "The product page link must be an https:// link.")
     if body.options.resolution not in ("480p", "720p"):
         raise HTTPException(422, "Resolution must be 480p or 720p.")
+    if body.options.personalize == "upload" and not any(
+            str(r.get("note") or "").lower().startswith("personalized product image") and r.get("file_id") for r in body.references):
+        raise HTTPException(422, "Upload at least one picture of the personalized product, or let the agent make them.")
     client = _client()
     job_id = store.new_job_id()
     title = (body.title or "").strip() or f"New ad {time.strftime('%d %b %H:%M')}"

@@ -23,6 +23,8 @@ const CAPTION_MODES = ["full", "cta_only", "none"] as const;
 const VIDEO_MODELS = ["seedance-2.5", "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini"] as const;
 const IMAGE_MODELS = ["seedream-5.0-pro", "seedream-5.0-flash"] as const;
 const TRANSITIONS = ["mix", "dissolve", "cut", "sample"] as const;
+// the note that marks an uploaded picture as the personalized product itself (ui/server/compose.py reads it too)
+const PRODUCT_IMAGE_NOTE = "personalized product image";
 const RETAKES = [1, 2, 0] as const;  // 0 = no limit
 // one click sets the models, the resolution and the retake limit; every control below can still be changed after
 const PRESETS = {
@@ -77,6 +79,10 @@ function NewJobForm() {
   };
   const [budget, setBudget] = useState({ seedream: NO_CAP, seedance: NO_CAP, evaluator: 3 });
   const [refs, setRefs] = useState<Array<Reference & { pending?: boolean; error?: string; localName: string }>>([]);
+  // how the personalized product images are made: the agent on the store page, or uploaded here by the user
+  const [personalize, setPersonalize] = useState<"auto" | "upload">("auto");
+  const [productImgs, setProductImgs] = useState<Array<Reference & { pending?: boolean; error?: string; localName: string }>>([]);
+  const readyProductImgs = productImgs.filter((r) => !r.pending && !r.error && r.file_id);
   const [autoApprove, setAutoApprove] = useState(false);
   const [stepApprove, setStepApprove] = useState(false);
   const [sampleCheck, setSampleCheck] = useState<{ state: "idle" | "checking" | "done"; result?: ValidateResult }>({ state: "idle" });
@@ -157,6 +163,11 @@ function NewJobForm() {
     if (!product.trim()) e.product = s.newJob.errors.productRequired;
     else if (!/^https:\/\//i.test(product.trim())) e.product = s.newJob.errors.productHttps;
     if (req.trim().length < 12 && !demo) e.req = s.newJob.errors.requirementsShort;
+    if (personalize === "upload" && !demo) {
+      if (productImgs.some((r) => r.pending)) e.productImgs = s.newJob.productImages.busy;
+      else if (!readyProductImgs.length) e.productImgs = s.newJob.productImages.required;
+      else if (readyProductImgs.some((r) => !(r.note ?? "").trim())) e.productImgs = s.newJob.productImages.noteRequired;
+    }
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -180,8 +191,11 @@ function NewJobForm() {
         sample_url: sampleMode === "link" && !socialRef ? sample.trim() : "",
         sample_upload: sampleMode === "upload" && sampleFile.ref ? { file_id: sampleFile.ref.file_id, filename: sampleFile.ref.filename, local_name: sampleFile.ref.local_name }
           : socialRef ? { file_id: socialRef.file_id, filename: socialRef.filename, local_name: socialRef.local_name, source_url: socialRef.source_url } : null,
-        budget, options: { length_s: length, resolution: res, captions, video_model: videoModel, image_model: imageModel, transitions, retakes }, auto_approve: autoApprove, step_approve: stepApprove,
-        references: refs.filter((r) => !r.pending && !r.error).map(({ file_id, filename, mount_name, note }) => ({ file_id, filename, mount_name, note })),
+        budget, options: { length_s: length, resolution: res, captions, video_model: videoModel, image_model: imageModel, transitions, retakes, personalize }, auto_approve: autoApprove, step_approve: stepApprove,
+        references: [
+          ...refs.filter((r) => !r.pending && !r.error).map(({ file_id, filename, mount_name, note }) => ({ file_id, filename, mount_name, note })),
+          ...(personalize === "upload" ? readyProductImgs.map(({ file_id, filename, mount_name, note }) => ({ file_id, filename, mount_name, note: `${PRODUCT_IMAGE_NOTE}: ${(note ?? "").trim()}` })) : []),
+        ],
       });
       router.push(`/job?id=${job.id}`);
     } catch (e) {
@@ -290,6 +304,44 @@ function NewJobForm() {
         <Field label={s.newJob.product.label} help={s.newJob.product.help} error={errors.product} id="product">
           <Input id="product" type="url" inputMode="url" autoComplete="off" placeholder={s.newJob.product.placeholder} value={product} onChange={(e) => setProduct(e.target.value)} aria-invalid={!!errors.product} className="h-11 rounded-xl text-base" />
         </Field>
+        <div>
+          <Segmented label={s.newJob.productImages.label} options={[{ v: "auto", l: s.newJob.productImages.auto }, { v: "upload", l: s.newJob.productImages.upload }]}
+            value={personalize} onChange={(v) => setPersonalize(v as "auto" | "upload")} />
+          <p className="mt-2 text-xs text-muted-foreground">{personalize === "auto" ? s.newJob.productImages.autoHint : s.newJob.productImages.uploadHint}</p>
+          {personalize === "upload" && (
+            <div className="mt-3 space-y-2">
+              {productImgs.map((r, i) => (
+                <div key={r.localName + i} className="flex flex-wrap items-center gap-2 rounded-xl bg-muted px-3 py-2 text-sm">
+                  <Paperclip className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                  <span className="min-w-0 flex-1 truncate font-medium">{r.localName}</span>
+                  {r.pending ? <span className="text-xs text-muted-foreground"><Loader2 className="inline size-3 animate-spin" /> {s.newJob.references.uploading}</span> : r.error ? <span className="text-xs text-danger">{s.newJob.references.failed}: {r.error}</span> : null}
+                  <Input value={r.note ?? ""} onChange={(e) => setProductImgs((xs) => xs.map((x, j) => (j === i ? { ...x, note: e.target.value } : x)))}
+                    placeholder={s.newJob.productImages.notePlaceholder} className="h-9 w-full rounded-lg text-sm sm:w-72" aria-label={s.newJob.productImages.notePlaceholder} />
+                  <button type="button" className="rounded-full p-1 text-muted-foreground hover:bg-foreground/10" aria-label={s.newJob.references.remove}
+                    onClick={() => setProductImgs((xs) => xs.filter((_, j) => j !== i))}><X className="size-4" /></button>
+                </div>
+              ))}
+              <label className="inline-flex cursor-pointer items-center gap-2 rounded-full border border-foreground/15 px-4 py-2 text-sm font-semibold hover:bg-foreground/5">
+                <Upload className="size-4" aria-hidden />{s.newJob.productImages.add}
+                <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="sr-only" onChange={async (e) => {
+                  const files = Array.from(e.target.files ?? []);
+                  e.target.value = "";
+                  for (const f of files) {
+                    const localName = f.name;
+                    setProductImgs((xs) => [...xs, { file_id: "", filename: f.name, localName, pending: true, note: "" }]);
+                    try {
+                      const up = await api.uploadReference(f, PRODUCT_IMAGE_NOTE);
+                      setProductImgs((xs) => xs.map((x) => (x.localName === localName && x.pending ? { ...up, localName, note: x.note } : x)));
+                    } catch (err) {
+                      setProductImgs((xs) => xs.map((x) => (x.localName === localName && x.pending ? { ...x, pending: false, error: err instanceof Error ? err.message : "error" } : x)));
+                    }
+                  }
+                }} />
+              </label>
+              {errors.productImgs && <p className="text-sm text-danger" role="alert">{errors.productImgs}</p>}
+            </div>
+          )}
+        </div>
         <Field label={s.newJob.titleField.label} id="title">
           <Input id="title" placeholder={s.newJob.titleField.placeholder} value={title} onChange={(e) => setTitle(e.target.value)} className="h-11 rounded-xl text-base" maxLength={80} />
         </Field>
