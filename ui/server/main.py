@@ -683,7 +683,15 @@ def export_captions(job_id: str, body: CaptionDoc):
 
 @app.get("/api/jobs/{job_id}/captions/export")
 def export_status(job_id: str):
-    return CAP.EXPORTS.get(job_id) or {"state": "idle"}
+    st = CAP.export_state(job_id)
+    if st and st.get("state") == "done" and st.get("file") and job_id not in CAP.EXPORTS:
+        # finished on another server instance: pick up its new files here too (the page plays the new version)
+        d = store.job_dir(job_id)
+        if d is not None and not (store.files_dir(d) / st["file"]).is_file():
+            import sync as _sync
+            _sync.forget_web_files(job_id)
+            SYNCER.start(job_id)
+    return st or {"state": "idle"}
 
 
 # ----------------------------------------------------------------------------- direct generation and drafts
@@ -845,6 +853,21 @@ def _resolver(job_id: str, d: Path, job: dict):
     return lambda n: CAP._local(d, n, lambda x: remote(x) or _fallback_url(job_id, job.get("session_id"), x)) if n else None
 
 
+def _fetch_plans(job_id: str, d: Path, job: dict) -> None:
+    """A rebuild reads the agent's edit plan from this instance's disk: on an instance that has not synced the job's
+    files yet (another server instance, or right after a release), fetch the plans first from the session or bucket."""
+    names = [n for n in (job.get("files_index") or {}) if re.match(r"edit_plan.*\.json$", n)]
+    files = store.files_dir(d)
+    files.mkdir(parents=True, exist_ok=True)
+    get = _resolver(job_id, d, job)
+    for n in names:
+        if not (files / n).is_file():
+            try:
+                get(n)
+            except Exception as e:
+                print(f"[ui] {job_id}: edit plan {n} not fetched: {str(e)[:120]}", flush=True)
+
+
 def _extras_out(job_id: str, d: Path) -> List[dict]:
     import scenes as SCN
     return [{**x, "url": f"/api/jobs/{job_id}/files/{x['file']}"} for x in SCN.load_extras(d)]
@@ -960,6 +983,7 @@ def set_scenes(job_id: str, body: ScenePicks):
         return {"ok": True, "state": "saved"}
     picks, extras, transitions = SCN.load_picks(d), SCN.load_extras(d), SCN.load_transitions(d)
     if _delivered(d, job):
+        _fetch_plans(job_id, d, job)
         _, _, names, final = _editor_context(job_id)
         try:
             return GEN.rebuild(job_id, d, _resolver(job_id, d, job), CAP.load_doc(d, names, final),
@@ -984,6 +1008,7 @@ def rebuild_final(job_id: str):
     _writable(job)
     if not _delivered(d, job):
         raise HTTPException(409, "The agent has not assembled this ad yet. Chosen takes are passed to the agent, which uses them when it builds the ad.")
+    _fetch_plans(job_id, d, job)
     doc = CAP.load_doc(d, names, final)
     import scenes as SCN
     try:  # the user's own clips and transition choice stay in every rebuild

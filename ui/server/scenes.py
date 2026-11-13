@@ -19,6 +19,39 @@ import store
 PICKS = "web_scene_picks.json"
 
 
+def _pull(d: Path) -> None:
+    """The site runs on several server instances: the choices (and the user's own clips) saved on another one are in
+    the bucket (jobs/<id>/web_scene_picks.json). Takes that copy when it is newer than this instance's."""
+    try:
+        import storage
+        if not storage.enabled():
+            return
+        raw = storage.get_bytes(d.name, PICKS)
+        if not raw:
+            return
+        remote = json.loads(raw)
+        local = _read(d / PICKS)
+        if not isinstance(local, dict) or float(remote.get("saved_at") or 0) > float(local.get("saved_at") or 0):
+            (d / PICKS).write_text(json.dumps(remote, indent=1))
+    except Exception:
+        pass
+
+
+def _store(d: Path, raw: dict) -> Path:
+    """Writes the choices here and to the bucket, stamped, so every instance reads the newest."""
+    import time
+    raw["saved_at"] = time.time()
+    path = d / PICKS
+    path.write_text(json.dumps(raw, indent=1))
+    try:
+        import storage
+        if storage.enabled():
+            storage.put_raw(storage.key(d.name, PICKS), path.read_bytes())
+    except Exception:
+        pass
+    return path
+
+
 def _read(p: Path):
     try:
         return json.loads(p.read_text())
@@ -27,16 +60,19 @@ def _read(p: Path):
 
 
 def load_picks(d: Path) -> Dict[str, dict]:
+    _pull(d)
     raw = _read(d / PICKS)
     return raw.get("scenes", {}) if isinstance(raw, dict) else {}
 
 
 def load_extras(d: Path) -> List[dict]:
+    _pull(d)
     raw = _read(d / PICKS)
     return [x for x in (raw.get("extras") or []) if isinstance(x, dict) and x.get("file")] if isinstance(raw, dict) else []
 
 
 def load_transitions(d: Path) -> str:
+    _pull(d)
     raw = _read(d / PICKS)
     return str(raw.get("transitions") or "keep") if isinstance(raw, dict) else "keep"
 
@@ -88,14 +124,12 @@ def save_picks(d: Path, picks: Dict[str, dict], extras=None, transitions: Option
     tr = load_transitions(d) if transitions is None else str(transitions)
     if tr not in transition_names():
         tr = "keep"
-    path = d / PICKS
-    path.write_text(json.dumps({"scenes": clean, "extras": known if extras is None else _clean_extras(extras, known),
-                                "transitions": tr}, indent=1))
-    return path
+    return _store(d, {"scenes": clean, "extras": known if extras is None else _clean_extras(extras, known), "transitions": tr})
 
 
 def add_extra(d: Path, file: str, kind: str, length: Optional[float], label: str) -> dict:
     """Registers an uploaded own clip (already saved as files/<file>); it starts out at the end of the scenes."""
+    _pull(d)
     raw = _read(d / PICKS)
     raw = raw if isinstance(raw, dict) else {"scenes": {}}
     extras = [x for x in raw.get("extras") or [] if isinstance(x, dict)]
@@ -104,18 +138,19 @@ def add_extra(d: Path, file: str, kind: str, length: Optional[float], label: str
             "after": "end", "start": 0.0, "end": round(float(length), 2) if length else 2.5, "mute": False, "include": True}
     raw["extras"] = extras + [item]
     raw.setdefault("transitions", "keep")
-    (d / PICKS).write_text(json.dumps(raw, indent=1))
+    _store(d, raw)
     return item
 
 
 def remove_extra(d: Path, extra_id: str) -> Optional[dict]:
+    _pull(d)
     raw = _read(d / PICKS)
     if not isinstance(raw, dict):
         return None
     hit = next((x for x in raw.get("extras") or [] if x.get("id") == extra_id), None)
     if hit:
         raw["extras"] = [x for x in raw["extras"] if x is not hit]
-        (d / PICKS).write_text(json.dumps(raw, indent=1))
+        _store(d, raw)
     return hit
 
 

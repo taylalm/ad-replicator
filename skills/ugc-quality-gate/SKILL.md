@@ -58,7 +58,7 @@ bash /mnt/skills/ugc-quality-gate/scripts/ensure-deps.sh
   "captions": ["POV: the dog finally gets the credit", "Personalize yours today"],
   "captions_mode": "full",
   "cta_text": "Personalize yours today",
-  "disclaimer_text": "AI-generated video",
+  "disclaimer_text": "",
   "setting_brief": "cozy living room / bedroom, soft daylight, authentic phone-shot look",
   "hook_brief": "woman on the couch lifts her foot to reveal the sole message within 2 s",
   "do_not_copy": ["TikTok UI", "the sample's brand", "Veo watermark", "the sample's artwork and names"],

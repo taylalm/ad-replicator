@@ -159,6 +159,18 @@ def preview_png(d: Path, doc: dict, kind: str, item: dict, out_path: Path, remot
     return out_path
 
 
+def _to_bucket(job_id: str, files_dir: Path, names) -> None:
+    """New files of a site edit go to the bucket at once, so every server instance can serve them."""
+    try:
+        import storage
+        if storage.enabled():
+            for n in names:
+                if n and (files_dir / n).is_file():
+                    storage.put_file(job_id, f"files/{n}", files_dir / n)
+    except Exception:
+        pass
+
+
 def make_thumb(video: Path) -> Optional[Path]:
     """A frame of a new version for the History card (final_edit_vN_thumb.jpg)."""
     try:
@@ -176,12 +188,40 @@ def next_version(files_dir: Path) -> int:
     return store.last_edit_version(files_dir) + 1
 
 
+def share_export(job_id: str, state: dict) -> None:
+    """The site runs on several server instances: the state of a running export or rebuild is also kept in the bucket
+    (jobs/<id>/export_state.json), so a progress poll answered by another instance still sees it."""
+    try:
+        import storage
+        if storage.enabled():
+            storage.put_raw(storage.key(job_id, "export_state.json"), json.dumps(state).encode())
+    except Exception:
+        pass
+
+
+def export_state(job_id: str) -> Optional[dict]:
+    """This instance's export state, else the bucket copy (a running one older than 30 minutes counts as failed)."""
+    st = EXPORTS.get(job_id)
+    if st is not None:
+        return st
+    try:
+        import storage
+        raw = storage.get_bytes(job_id, "export_state.json") if storage.enabled() else None
+        st = json.loads(raw) if raw else None
+    except Exception:
+        return None
+    if st and st.get("state") == "running" and time.time() - float(st.get("started") or 0) > 1800:
+        st.update(state="failed", error="The update stopped (the server restarted). Press the button again.")
+    return st
+
+
 def start_export(job_id: str, d: Path, doc: dict, remote_url, persist: Callable[[Path, str], None]) -> dict:
     """Renders files/final_edit_v<n>.mp4 in a background thread; poll EXPORTS[job_id]."""
     if EXPORTS.get(job_id, {}).get("state") == "running":
         return EXPORTS[job_id]
     state = {"state": "running", "started": time.time(), "file": None, "error": None, "warnings": []}
     EXPORTS[job_id] = state
+    share_export(job_id, state)
 
     def work():
         try:
@@ -214,8 +254,10 @@ def start_export(job_id: str, d: Path, doc: dict, remote_url, persist: Callable[
                     persist(path, mount)
                 except Exception as e:  # the export exists here; only the copy in the agent session failed
                     state["warnings"].append(f"not kept in the agent session ({mount}): {str(e)[:120]}")
+            _to_bucket(job_id, files_dir, [name, thumb.name if thumb else None])
         except Exception as e:
             state.update(state="failed", error=str(e)[:500])
+        share_export(job_id, state)
 
     threading.Thread(target=work, daemon=True).start()
     return state

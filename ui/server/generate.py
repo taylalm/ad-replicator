@@ -366,6 +366,8 @@ def rebuild(job_id: str, d: Path, resolve: Callable[[str], Optional[Path]], capt
         raise RuntimeError("an export is already running")
     state = {"state": "running", "started": time.time(), "file": None, "error": None, "warnings": []}
     exports[job_id] = state
+    import captions as _shared
+    _shared.share_export(job_id, state)
 
     def work():
         try:
@@ -573,8 +575,10 @@ def rebuild(job_id: str, d: Path, resolve: Callable[[str], Optional[Path]], capt
                     persist(path, mount)
                 except Exception as e:
                     state["warnings"].append(f"not kept in the agent session: {str(e)[:120]}")
+            _shared._to_bucket(job_id, files, [name, clean, thumb.name if thumb else None])
         except Exception as e:
             state.update(state="failed", error=str(e)[:600])
+        _shared.share_export(job_id, state)
 
     threading.Thread(target=work, daemon=True).start()
     return state

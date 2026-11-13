@@ -104,7 +104,8 @@ def agent_recut(job: dict, d: Path) -> None:
         extras = [{**x, "include": False} for x in old.get("extras") or [] if isinstance(x, dict)]
     except (OSError, ValueError, AttributeError):
         extras = []
-    (d / "web_scene_picks.json").write_text(json.dumps({"scenes": {}, "extras": extras, "transitions": "keep"}))
+    import scenes as _scn
+    _scn._store(d, {"scenes": {}, "extras": extras, "transitions": "keep"})
     takes = d / "web_takes.json"
     if takes.exists():
         takes.write_text(json.dumps([{**t, "accepted": False} for t in json.loads(takes.read_text())], indent=1, ensure_ascii=False))
@@ -336,6 +337,11 @@ def restore_sample(client, job: dict, dest: Path) -> Optional[str]:
 
 
 _WEB_CHECKED: set = set()
+
+
+def forget_web_files(job_id: str) -> None:
+    """The next sync pass looks at the session's site files again (an edit finished on another server instance)."""
+    _WEB_CHECKED.discard(job_id)
 
 
 def restore_web_files(client, job: dict, d: Path) -> List[str]:

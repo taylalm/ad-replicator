@@ -1,6 +1,6 @@
 ---
 name: video-assembly
-description: Assemble the final vertical (9:16) ad from generated clips and stills in the Managed Agents sandbox - trim, scale, concatenate, burn in captions in the sample's caption style (1-2 short lines in the top band), overlay a photo inset with an arrow, cut in a montage of product-preview stills, mix music / sound effects / the clips' own audio, and close on a generated end card with an AI disclaimer. Use after all clips are generated and the edit plan is agreed. No billable API calls.
+description: Assemble the final vertical (9:16) ad from generated clips and stills in the Managed Agents sandbox - trim, scale, concatenate, burn in captions in the sample's caption style (1-2 short lines in the top band), overlay a photo inset with an arrow, cut in a montage of product-preview stills, mix music / sound effects / the clips' own audio, and close on a generated end card. Use after all clips are generated and the edit plan is agreed. No billable API calls.
 ---
 
 # Video assembly
@@ -28,7 +28,7 @@ python3 /mnt/skills/video-assembly/scripts/assemble.py --plan /mnt/session/outpu
 python3 /mnt/skills/video-assembly/scripts/assemble.py --plan /mnt/session/outputs/08_assembly/edit_plan.json
 ```
 
-5. Report the output path, duration, and the preview frame paths from the JSON result. Look at the preview frames before calling the video done: captions readable and above the faces, insets not covering the product, end card and disclaimer present.
+5. Report the output path, duration, and the preview frame paths from the JSON result. Look at the preview frames before calling the video done: captions readable and above the faces, insets not covering the product, end card present, and no AI disclaimer unless the brief asked for one.
 
 ## Edit plan schema
 
@@ -56,7 +56,6 @@ python3 /mnt/skills/video-assembly/scripts/assemble.py --plan /mnt/session/outpu
   ],
   "end_card": {"duration": 3, "image": "/mnt/session/outputs/05_personalize/product_harper.png",
                "lines": [{"text": "Personalized Kids Blanket", "size": 54}, {"text": "Personalize yours today", "size": 60, "pill": "#D62839"}]},
-  "disclaimer": {"text": "AI-generated video"},
   "music": {"path": "/mnt/session/uploads/track.mp3", "volume": 0.7, "fade_out": 1.0},
   "sfx": [{"path": "/mnt/session/uploads/kids_giggle.wav", "start": 0.5, "volume": 0.9}],
   "keep_clip_audio": true,
@@ -76,7 +75,7 @@ python3 /mnt/skills/video-assembly/scripts/assemble.py --plan /mnt/session/outpu
 - `outro`: an outro video appended after the last clip, scaled to `size`. No outro ships with this skill: set `path` only to a video the user uploaded and asked for (`true` or `{}` fails). When that outro carries the AI line, drop `end_card` and `disclaimer`.
 - `end_card` (the normal ending): a still card after the last clip. `duration` (seconds, default 3), `background` (default `#FFFFFF`), an optional `image` (the product preview, scaled to fit) and `lines` centred under it: strings or `{"text", "size" (px, default 64), "weight", "color", "pill"}` (`pill` = a box colour behind white text). Put the product name and the CTA line on it; no prices unless approved. The card uses the text font only, so write its lines without emoji.
 - Audio: `keep_clip_audio` keeps the clips' own sound (for example natural sound generated with the clips); `music` is looped and faded out before the outro; `sfx` entries are placed at `start` seconds. All present sources are mixed. Without any source the track is silent, which the quality gate treats as a failure, so always provide at least music from the uploads.
-- `disclaimer`: a small pill over the whole video, end card included (it stops before an outro), e.g. `{"text": "AI-generated video"}` (optional `position`, `size`). Always set it when the ad ends on an `end_card`.
+- `disclaimer` (optional, off by default): a small pill over the whole video, end card included (it stops before an outro), e.g. `{"text": "AI-generated video"}` (optional `position`, `size`). Set it ONLY when the brief (REQUIREMENTS) asks for an AI label, with its wording; otherwise leave it out. Ending on an `end_card` is no reason to add one.
 - `preview_frames`: number of JPG stills saved next to the output for review and the quality gate.
 - `clean_output`: a second render of the same cut with no captions, insets, arrows or disclaimer (sound and outro kept), for the client to re-edit with their own footage and text. Default `<output>_clean.mp4`; `false` skips it.
 
