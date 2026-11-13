@@ -17,6 +17,9 @@ import shlex
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lessons  # rules learned from retakes (memory store + bundled copy) and their lints
+
 SEEDANCE_SCRIPT = "/mnt/skills/generate-with-seedance/scripts/seedance-generate.mjs"
 RATIOS = {"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"}
 RESOLUTIONS = {"480p", "720p", "1080p"}
@@ -102,7 +105,9 @@ def template(args):
                     "personalization": "<what is personalized, e.g. animal + quote + name on the sole>",
                     "layout": "<exact layout from the website preview, e.g. left sole: quote text; right sole: animal artwork + name; leg: all-over pattern; cuff/heel/toe in the trim colour>",
                     "spec": "<ONE description of the personalized product as it really looks (from the website preview and the product page's own photos): shape, where the print sits and how big it is, plain areas, material; and how it sits when worn or held. Pasted unchanged into every prompt that shows the product and passed to clip_check as the expected description>",
-                    "size_statement": "<chosen size with a scale cue, e.g. 50 x 60 inches (127 x 152 cm): held up by an 8-year-old it is taller than the child and wider than their arm span; leave empty for products without a size>"},
+                    "size_statement": "<chosen size with a scale cue, e.g. 50 x 60 inches (127 x 152 cm): held up by an 8-year-old it is taller than the child and wider than their arm span; leave empty for products without a size>",
+                    "use": "<ONE line from the product page photos: how it is mounted, worn, carried or lit, which side shows, what never shows (lesson R01); pasted word for word into every product shot>",
+                    "kind": ["<product kinds for the lesson selector: flat_print, flat_rigid, soft, wearable, mounted, lit, photo, thick; see lessons.py list>"]},
         "cast_count": "<number of people in the sample analysis; the replica uses the same number>",
         "do_not_copy": analysis.get("do_not_copy", []),
         "defaults": {"version": args.version, **({"model": args.model} if args.model else {}), "ratio": "9:16", "resolution": "480p",
@@ -167,6 +172,11 @@ def validate_plan(plan, analysis=None):
     if len(set(ids)) != len(ids):
         errors.append("clip ids must be unique")
     total_tasks = 0
+    lesson_rules = lessons.load_rules()
+    rules_per_clip = {}
+    kinds = lessons.product_kinds(plan)
+    if plan.get("product") and not plan["product"].get("kind") and not kinds:
+        warnings.append("product.kind is empty and could not be inferred from product.spec: set it (flat_print, flat_rigid, soft, wearable, mounted, lit, photo, thick) so the matching lessons apply")
     for c in clips:
         cid = c.get("id", "?")
         mode = c.get("mode", "reference")
@@ -332,6 +342,11 @@ def validate_plan(plan, analysis=None):
                 cam = str(x.get("camera_position") or "").lower()
                 if "outside" in cam and re.search(r"\binside\b|driver'?s seat|in the car", low) and not re.search(r"outside", low):
                     warnings.append(f"{cid}: the sample camera is outside ({cam[:60]}); the prompt places it inside")
+        # lessons learned from retakes: the rules that match this shot, and their lints
+        l_err, l_warn, applied = lessons.lint_clip(plan, c, analysis, lesson_rules)
+        errors += l_err
+        warnings += l_warn
+        rules_per_clip[cid] = applied
         if videos and not all(str(refs.get(v, {}).get("generated", "")).lower() in ("true", "1") for v in videos):
             warnings.append(f"{cid}: a video reference that shows real people is refused by Seedance (InputVideoSensitiveContentDetected.PrivacyInformation, "
                             "tested 25 Oct 2026 on the sample); use only footage without identifiable people or our own generated clips (mark them \"generated\": true)")
@@ -346,7 +361,9 @@ def validate_plan(plan, analysis=None):
             warnings.append(f"{cid}: the product is referenced but none of the names {names} is mentioned; say the name must appear exactly as in the product image")
         if any(refs.get(r, {}).get("kind") == "person" for r in cref) and not re.search(r"same (person|woman|man|child|girl|boy)|consistent|throughout", low):
             warnings.append(f"{cid}: state that the person from @ImageN stays the same in every shot (consistency)")
-    return {"ok": not errors, "errors": errors, "warnings": warnings, "clips": len(clips), "paid_tasks": total_tasks}
+    return {"ok": not errors, "errors": errors, "warnings": warnings, "clips": len(clips), "paid_tasks": total_tasks,
+            "product_kinds": kinds, "lessons_per_clip": rules_per_clip,
+            "lesson_stores": sorted({r["origin"] for r in lesson_rules if r["origin"] != "bundled"})}
 
 
 def validate(args):

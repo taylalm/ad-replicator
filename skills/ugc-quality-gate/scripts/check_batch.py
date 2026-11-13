@@ -10,7 +10,7 @@ This starts the checks as detached processes, a few at a time, and collects thei
 check_jobs.json is a list of {"name": "clip_03", "args": ["--clip", "/mnt/session/outputs/07_clips/clip_03.mp4",
 "--prompt-file", "...", "--product", "label|image|expected", "--person", "name|image", "--out", "/mnt/session/outputs/07_clips/checks"]}:
 the arguments of one clip_check.py call. `run` starts what is not started yet, waits up to --max-wait seconds (default
-100) and prints each verdict; call it again until "pending" is 0. Do not sleep before calling it: it waits by itself.
+50, under the platform's 60 s foreground limit) and prints each verdict; call it again until "pending" is 0. Do not sleep before calling it: it waits by itself.
 Standard library only.
 """
 import argparse
@@ -148,7 +148,7 @@ def main():
     r.add_argument("--jobs", required=True)
     r.add_argument("--state", required=True)
     r.add_argument("--parallel", type=int, default=4)
-    r.add_argument("--max-wait", type=float, default=100)
+    r.add_argument("--max-wait", type=float, default=50)  # under the platform's 60 s limit: a longer bash call becomes a background task
     r.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     run(a)

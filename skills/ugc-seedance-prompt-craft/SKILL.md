@@ -19,7 +19,14 @@ python3 /mnt/skills/ugc-seedance-prompt-craft/scripts/craft.py template \
 
    It groups the sample's scenes into clips of 5-10 s (Seedance 2.5 minimum is 4 s; sample shots are usually shorter, so one clip covers 1-3 consecutive scenes and video-assembly trims them). Keep the clip count at or below the paid-call budget.
 
-2. Fill `prompts.json` (schema in `references/prompt_plan_schema.md`): the `references` table (AI person images, personalized product previews, optional setting/style images), then one `prompt` per clip following `references/ugc_shot_patterns.md` and the official rules in `references/seedance25_rules.md`. Essentials:
+2. Fill `prompts.json` (schema in `references/prompt_plan_schema.md`): the `references` table (AI person images, personalized product previews, optional setting/style images), then one `prompt` per clip following `references/ugc_shot_patterns.md` and the official rules in `references/seedance25_rules.md`. Before writing each clip, pull the lessons learned from earlier ads' retakes for that shot and follow them (they are rules that prevented paid retakes; `references/lessons/generic/` plus any mounted store under `/mnt/memory/`):
+
+```bash
+python3 /mnt/skills/ugc-seedance-prompt-craft/scripts/lessons.py select --plan /mnt/session/outputs/06_prompts/prompts.json --clip clip_01
+# or before the plan exists: lessons.py select --shot product,walking --product flat_rigid,mounted
+```
+
+   Set `product.kind` and `product.use` first (R01: one line on how the product is mounted, worn, carried or lit, pasted word for word into every product shot). `validate` runs the lessons' lints and lists the rule ids that applied per clip (`lessons_per_clip`); the site reads them to score each rule. Essentials:
    - Address references as `@Image1`, `@Image2`... in the order of the clip's `references` list. Bind each one in the first sentences ("@Image1 is the woman who appears in every shot", "@Image2 is the personalized sock: the sole artwork and the name LILY must match it exactly").
    - Describe the shots with timestamps that cover the whole duration ("0-4s ... 4-8s ...").
    - Always end with: "No subtitles, no on-screen text, no captions, no logos, no watermarks." Captions are burned in later by video-assembly.
@@ -53,6 +60,10 @@ python3 /mnt/skills/ugc-seedance-prompt-craft/scripts/craft.py render \
 - `reference` (default): AI person + product preview images as `reference_image`; any ratio and duration (4-30 s).
 - `edit`: the sample video itself as `@Video1` (`reference_video`, public HTTPS URL, 4-30 s) with replace/edit wording; ratio `adaptive`, duration `-1`. Use only when the sample has no platform UI, watermark or brand overlay, because edit mode keeps everything that is not replaced.
 - `extend`: continue a generated clip; ratio `adaptive`.
+
+## Lessons (rules learned from retakes)
+
+`scripts/lessons.py` reads one-rule-per-file markdown from every mounted memory store (`/mnt/memory/<store>/rules/*.md`, maintained by the operator; a store rule overrides a bundled rule with the same id) and from `references/lessons/generic/` (format in its README.md). `select` returns the 5-10 rules that match a shot's tags (product, walking, hands_only, unboxing, multi_person, timed_beat, flat_lay, text, feet, still_object) and the product kinds; `lint` (also run by `craft.py validate`) enforces the rules that a script can check: `product.use` word for word in product shots, no "3D" wording for flat products, a named frame edge for every entrance, no first frame together with reference images (Seedance refuses it), hands-only shots with a visible forearm or surface, upright text in flat lays, one name per close shot. Never edit the store from the sandbox: lessons are reviewed on the site and published from there.
 
 ## Guardrails
 

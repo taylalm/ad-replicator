@@ -48,7 +48,8 @@ function JobScreen() {
   const stepWait = job.awaiting_approval && job.awaiting_step && job.awaiting_step !== 3 ? job.steps.find((st) => st.n === job.awaiting_step) : null;
   const title = view === "step" && stepWait ? s.plan.stepTitle(stepWait.n, stepWait.name) : view === "plan" ? s.plan.title : view === "results" ? (job.quality.at(-1)?.verdict === "PASS" || !job.quality.length ? s.results.ready : s.results.readyWithReview) : s.live.title;
   const finalLen = job.inputs.options?.length_s ? `${job.inputs.options.length_s} s` : "";
-  const subtitle = view === "step" ? s.plan.stepSubtitle : view === "plan" ? undefined : view === "results" ? s.results.subtitle(finalLen) : s.live.subtitle;
+  const editSub = job.mode === "sample_edit" ? s.edit.view.noMessages : null;
+  const subtitle = editSub && view === "results" ? editSub : view === "step" ? s.plan.stepSubtitle : view === "plan" ? undefined : view === "results" ? s.results.subtitle(finalLen) : s.live.subtitle;
 
   return (
     <div className="space-y-8">
@@ -62,11 +63,11 @@ function JobScreen() {
         <motion.div key={view} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.25 }}>
           {view === "plan" && <PlanApproval job={job} onSend={send} replay={replay.enabled} />}
           {view === "step" && <StepReview job={job} onSend={send} replay={replay.enabled} />}
-          {view === "live" && <LiveProgress job={job} events={events} onSend={send} />}
+          {view === "live" && <LiveProgress job={job} events={events} onSend={send} onRefresh={() => void refresh()} />}
           {view === "results" && <Results job={job} events={events} onSend={send} onRefresh={refresh} />}
         </motion.div>
       </AnimatePresence>
-      <p className="text-xs text-muted-foreground">{s.common.sessionId}: <span className="font-mono">{job.session_id}</span>{job.elapsed_s ? ` · ${fmtDuration(job.elapsed_s)}` : ""}</p>
+      <p className="text-xs text-muted-foreground">{job.mode === "sample_edit" ? s.edit.badge : <>{s.common.sessionId}: <span className="font-mono">{job.session_id}</span></>}{job.elapsed_s ? ` · ${fmtDuration(job.elapsed_s)}` : ""}</p>
     </div>
   );
 }

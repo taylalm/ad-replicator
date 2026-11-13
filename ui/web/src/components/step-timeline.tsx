@@ -56,10 +56,11 @@ export function StepTimeline({ steps, currentStep, compact = false }: { steps: S
             <div className={cn("min-w-0 flex-1", compact ? "pt-0.5" : "pt-1")}>
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                 <span className={cn("text-sm font-semibold", pending && "text-muted-foreground", active && "text-foreground")}>
-                  {s.steps.names[st.n] ?? st.name}
+                  {st.label ?? s.steps.names[st.n] ?? st.name}
                 </span>
                 <span className="text-xs text-muted-foreground tabular-nums">
-                  {done && st.elapsed_s != null && s.steps.elapsed(fmtDuration(st.elapsed_s))}
+                  {done && st.skipped && s.steps.skipped}
+                  {done && !st.skipped && st.elapsed_s != null && s.steps.elapsed(fmtDuration(st.elapsed_s))}
                   {active && st.elapsed_s != null && s.steps.runningFor(fmtDuration(st.elapsed_s))}
                   {failed && s.steps.failed}
                   {st.rounds > 1 && ` · ${st.rounds}x`}

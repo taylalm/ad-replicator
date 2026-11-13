@@ -9,7 +9,7 @@
 | C5 | Hook-product link | the product answers the hook situation | emotion mismatch, the product appears unrelated | 06_prompts |
 | C6 | Product visuals | right product, right colours, rigid shape, readable artwork, consistent across shots, true size (a blanket held up by a child is taller than the child; towel-sized = deformed_product hard failure) | deformed sock/blanket, garbled text, product changes between shots | 06_prompts (closer, stiller product shot; "exactly as @Image2") |
 | C7 | Highlight customisation | a close, steady shot of the personalized area for 2+ s | personalization only glimpsed | 06_prompts (add close-up) |
-| C8 | CTA | end card with product name + the CTA line (e.g. "Personalize yours today"), AI disclaimer visible, no made-up prices | missing end card, wrong wording, prices shown without approval | 08_assembly |
+| C8 | CTA | end card with product name + the CTA line (e.g. "Personalize yours today"), AI disclaimer visible when the brief asks for one, no made-up prices | missing end card, wrong wording, prices shown without approval | 08_assembly |
 
 Hard failures (never deliver): misspelled name, other brand/logo/account name, profanity, rude gesture, deformed product, wrong personalization (including a mirrored/swapped layout or a bust where the preview shows a full-body figure), platform UI, watermark (including AI-model marks), unsafe content involving children, cast count different from the sample, no audible track.
 

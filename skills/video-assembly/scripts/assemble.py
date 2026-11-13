@@ -48,6 +48,17 @@ PRESETS = {
     "pov_box": {"size": 0.029, "weight": "bold", "style": "box", "color": "#FFFFFF", "box_color": "#000000F0", "position": "top", "max_lines": 3},
 }
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
+# Transitions between scenes: our name -> ffmpeg xfade transition (None = hard cut). The ad keeps its length: a
+# transition is centred on the cut and blends the last and first moments of the two scenes.
+TRANSITIONS = {
+    "cut": None, "dissolve": "fade", "fade_black": "fadeblack", "fade_white": "fadewhite",
+    "slide_left": "slideleft", "slide_right": "slideright", "slide_up": "slideup", "slide_down": "slidedown",
+    "wipe_left": "wipeleft", "wipe_right": "wiperight", "push_left": "smoothleft", "push_right": "smoothright",
+    "zoom": "zoomin", "circle": "circleopen", "blur": "hblur", "pixel": "pixelize",
+}
+# "mix": a different simple effect at every cut, in this order (the same plan always gives the same ad)
+TRANSITION_MIX = ["dissolve", "slide_left", "zoom", "wipe_right", "slide_up", "fade_white", "push_left", "circle"]
+TRANSITION_S = 0.35
 
 
 def fail(message, code=2):
@@ -149,6 +160,8 @@ def validate(plan, dry_run):
             continue
         if clip.get("path") and clip.get("zoom") is not None:
             num(clip["zoom"], f"clips[{i}].zoom", 1.0)
+        if clip.get("path") and clip.get("fit", "cover") not in ("contain", "cover"):
+            fail(f"clips[{i}].fit must be cover (fill the frame, default) or contain (whole picture over a blurred copy)")
         if not clip.get("path"):
             fail(f"clips[{i}].path (video) or clips[{i}].image (still) is required")
         if not os.path.isfile(clip["path"]):
@@ -156,6 +169,10 @@ def validate(plan, dry_run):
         start = num(clip.get("start", 0), f"clips[{i}].start", 0)
         if clip.get("end") is not None and num(clip["end"], f"clips[{i}].end") <= start:
             fail(f"clips[{i}].end must be greater than start")
+    plan_transitions(plan, ["clip"] * len(clips))  # unknown names and bad durations stop here, dry run included
+    for key in ("end_card", "outro"):
+        if isinstance(plan.get(key), dict):
+            transition_spec(plan[key].get("transition"), f"{key}.transition")
     refs = [str(t) for t in plan.get("reference_captions", []) if str(t).strip()]
     if plan.get("captions") and not refs:
         warnings.append("plan.reference_captions is empty: list the sample's (and any reference ad's) on-screen text so copied captions are caught")
@@ -239,6 +256,49 @@ def validate(plan, dry_run):
     if plan.get("disclaimer") and outro:
         warnings.append("Disclaimer set although the outro already carries the AI line; remove plan.disclaimer unless the client wants both.")
     return warnings
+
+
+def transition_spec(value, where):
+    """A transition setting as (name, seconds): a name, "mix", or {"type": name, "duration": seconds}. None when unset."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        name, dur = value.get("type", "dissolve"), value.get("duration", TRANSITION_S)
+    else:
+        name, dur = value, TRANSITION_S
+    name = str(name).strip().lower().replace("-", "_").replace(" ", "_")
+    if name in ("none", "hard_cut", "off"):
+        name = "cut"
+    if name != "mix" and name not in TRANSITIONS:
+        fail(f"{where}: unknown transition \"{name}\"; use mix or one of {', '.join(TRANSITIONS)}")
+    dur = num(dur, f"{where}.duration", 0.1)
+    if dur > 1.0:
+        fail(f"{where}.duration must be 0.1 to 1.0 seconds")
+    return name, dur
+
+
+def plan_transitions(plan, kinds):
+    """The transition INTO each part of the ad (index 0 has none): (name, seconds) or None for a hard cut.
+    kinds: one of clip / end_card / outro per part. plan.transitions sets every cut; a clip's (or the end card's,
+    the outro's) own `transition` overrides it; "mix" walks TRANSITION_MIX and dissolves into the ending."""
+    default = transition_spec(plan.get("transitions"), "plan.transitions")
+    out, n_mix = [None], 0
+    for i in range(1, len(kinds)):
+        kind = kinds[i]
+        own = plan["clips"][i].get("transition") if kind == "clip" else (plan.get(kind) or {}).get("transition")
+        spec = transition_spec(own, f"{kind if kind != 'clip' else f'clips[{i}]'}.transition") or default
+        if spec and spec[0] == "mix":
+            if kind == "clip":
+                spec = (TRANSITION_MIX[n_mix % len(TRANSITION_MIX)], spec[1])
+                n_mix += 1
+            else:
+                spec = ("dissolve", spec[1])
+        out.append(spec if spec and TRANSITIONS.get(spec[0]) else None)
+    return out
+
+
+def part_kinds(plan):
+    return ["clip"] * len(plan["clips"]) + (["end_card"] if plan.get("end_card") else []) + (["outro"] if plan.get("outro") else [])
 
 
 def run(cmd):
@@ -726,6 +786,39 @@ def media_seconds(ffmpeg, path):
     fail(f"Could not read duration of {path}")
 
 
+def payoff_needs(window, length):
+    """The part of a clip the edit must keep: its payoff, up to the clip's end when the payoff lands in the last second."""
+    start, end = float(window[0]), float(window[1])
+    return start, (length if length - end <= 1.0 else end)
+
+
+def check_payoffs(plan, ffmpeg, dry_run, warnings):
+    """A clip window that cuts off the payoff found by the clip check (check_<clip>.json) loses the scene's joke."""
+    for i, clip in enumerate(plan.get("clips") or []):
+        path = clip.get("path")
+        if not path or clip.get("cut_payoff_ok") or not os.path.isfile(path):
+            continue
+        folder, stem = os.path.dirname(path), os.path.splitext(os.path.basename(path))[0]
+        window = None
+        for report in (os.path.join(folder, "checks", f"check_{stem}.json"), os.path.join(folder, f"check_{stem}.json")):
+            if os.path.isfile(report):
+                try:
+                    with open(report) as fh:
+                        window = json.load(fh).get("payoff_window")
+                except (OSError, ValueError):
+                    pass
+                break
+        if not (isinstance(window, list) and len(window) == 2):
+            continue
+        length = media_seconds(ffmpeg, path)
+        first, last = payoff_needs(window, length)
+        start, end = float(clip.get("start") or 0), float(clip.get("end") or length)
+        if start > first + 0.1 or end < last - 0.1:
+            (warnings.append if dry_run else fail)(
+                f"clips[{i}] ({stem}) plays {start:.1f}-{end:.1f} s of {length:.1f} s and cuts its payoff ({float(window[0]):.1f}-{float(window[1]):.1f} s): "
+                f"set start <= {first:.1f} and end >= {last:.1f}, or add cut_payoff_ok with the reason")
+
+
 def has_audio(ffmpeg, path):
     proc = subprocess.run([ffmpeg, "-hide_banner", "-i", path], capture_output=True, text=True)
     return "Audio:" in proc.stderr
@@ -746,6 +839,14 @@ def main():
     warnings = validate(plan, args.dry_run)
     width, height = plan["size"]
     fps = plan["fps"]
+    deps_ffmpeg = None
+    try:
+        import imageio_ffmpeg
+        deps_ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        pass
+    if deps_ffmpeg:
+        check_payoffs(plan, deps_ffmpeg, args.dry_run, warnings)
 
     if args.dry_run:
         steps = []
@@ -759,6 +860,10 @@ def main():
         if plan.get("outro"):
             steps.append(f"outro: {plan['outro']['path']}")
         steps.append("concatenate")
+        kinds = part_kinds(plan)
+        for i, tr in enumerate(plan_transitions(plan, kinds)):
+            if tr:
+                steps.append(f"transition into part {i + 1} ({kinds[i]}): {tr[0]}, {tr[1]} s")
         steps += [f"caption {c['start']}-{c['end']} s ({c.get('style', 'client')}, {c.get('position', 'top')}): {c['text']}"
                   for c in plan.get("captions", [])]
         steps += [f"inset {c['start']}-{c['end']} s: {c['image']}" + (" with arrow" if c.get("arrow_to") else "") for c in plan.get("insets", [])]
@@ -781,9 +886,14 @@ def main():
     try:
         vf = (f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
               f"setsar=1,fps={fps},format=yuv420p")
+        # "contain": footage of another shape (a landscape intro, a square brand outro) keeps its whole picture, centred
+        # over a blurred, darkened copy of itself that fills the frame
+        vf_contain = (f"split[bg][fg];[bg]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+                      f"gblur=sigma=24,eq=brightness=-0.08[bgb];[fg]scale={width}:{height}:force_original_aspect_ratio=decrease[fgs];"
+                      f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1,fps={fps},format=yuv420p")
         enc = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
         keep_audio = bool(plan.get("keep_clip_audio"))
-        parts, part_times = [], []
+        parts, part_times, sources = [], [], []
         t_cursor = 0.0
         for i, clip in enumerate(plan["clips"]):
             out = os.path.join(tmp, f"part_{i:02d}.mp4")
@@ -805,6 +915,7 @@ def main():
                        "-f", "lavfi", "-t", f"{dur:.3f}", "-i", "anullsrc=r=44100:cl=stereo", "-vf", zf] + enc + \
                       ["-c:a", "aac", "-shortest", out]
                 run(cmd)
+                sources.append(None)
             else:
                 cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
                 start = float(clip.get("start", 0))
@@ -813,17 +924,18 @@ def main():
                 cmd += ["-i", clip["path"]]
                 if clip.get("end") is not None:
                     cmd += ["-t", str(float(clip["end"]) - start)]
-                cvf = vf
+                cvf = vf_contain if clip.get("fit") == "contain" else vf
                 if clip.get("zoom") and float(clip["zoom"]) > 1.0:  # tighter framing: crop the centre (or zoom_anchor) before scaling
                     z = float(clip["zoom"])
                     ax, ay = (clip.get("zoom_anchor") or [0.5, 0.5])[:2]
                     cvf = f"crop=iw/{z:.4f}:ih/{z:.4f}:(iw-iw/{z:.4f})*{float(ax):.3f}:(ih-ih/{z:.4f})*{float(ay):.3f}," + vf
-                if keep_audio and has_audio(ffmpeg, clip["path"]):
+                if keep_audio and not clip.get("mute") and has_audio(ffmpeg, clip["path"]):
                     run(cmd + ["-vf", cvf] + enc + ["-c:a", "aac", "-ar", "44100", "-ac", "2", out])
                 else:
                     length = float(clip["end"]) - start if clip.get("end") is not None else media_seconds(ffmpeg, clip["path"]) - start
                     run(cmd + ["-f", "lavfi", "-t", f"{length:.3f}", "-i", "anullsrc=r=44100:cl=stereo", "-vf", cvf] + enc +
                         ["-c:a", "aac", "-shortest", "-map", "0:v", "-map", "1:a", out])
+                sources.append({"path": clip["path"], "start": start, "vf": cvf})
             parts.append(out)
             d = media_seconds(ffmpeg, out)
             part_times.append((t_cursor, t_cursor + d))
@@ -842,11 +954,12 @@ def main():
             out = os.path.join(tmp, "part_outro.mp4")
             opath = plan["outro"]["path"]
             olen = media_seconds(ffmpeg, opath)
+            ovf = vf_contain if plan["outro"].get("fit") == "contain" else vf
             if has_audio(ffmpeg, opath):
-                run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", opath, "-vf", vf] + enc + ["-c:a", "aac", "-ar", "44100", "-ac", "2", out])
+                run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", opath, "-vf", ovf] + enc + ["-c:a", "aac", "-ar", "44100", "-ac", "2", out])
             else:
                 run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", opath, "-f", "lavfi", "-t", f"{olen:.3f}", "-i",
-                     "anullsrc=r=44100:cl=stereo", "-vf", vf] + enc + ["-c:a", "aac", "-shortest", "-map", "0:v", "-map", "1:a", out])
+                     "anullsrc=r=44100:cl=stereo", "-vf", ovf] + enc + ["-c:a", "aac", "-shortest", "-map", "0:v", "-map", "1:a", out])
             parts.append(out)
         listing = os.path.join(tmp, "parts.txt")
         with open(listing, "w") as fh:
@@ -854,6 +967,61 @@ def main():
         base = os.path.join(tmp, "base.mp4")
         run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listing, "-c", "copy", base])
         duration = media_seconds(ffmpeg, base)
+        joins = plan_transitions(plan, part_kinds(plan))
+        used_transitions = []
+        if any(joins):
+            # Each part gets a short "handle" on the side of a transition (real footage when the clip has it, else its
+            # edge frame held), so the blend is centred on the cut and the ad keeps its length and caption times.
+            lens = [media_seconds(ffmpeg, p) for p in parts]
+            for i in range(1, len(parts)):  # a blend never takes more than 40% of the shorter neighbour
+                if joins[i]:
+                    joins[i] = (joins[i][0], round(min(joins[i][1], 0.4 * min(lens[i - 1], lens[i])), 3))
+                    if joins[i][1] < 0.1:
+                        joins[i] = None
+            wide = []
+            for i, part in enumerate(parts):
+                h_in = joins[i][1] / 2 if joins[i] else 0.0
+                h_out = joins[i + 1][1] / 2 if i + 1 < len(parts) and joins[i + 1] else 0.0
+                if not h_in and not h_out:
+                    wide.append(part)
+                    continue
+                total = h_in + lens[i] + h_out
+                src = sources[i] if i < len(sources) else None
+                out = os.path.join(tmp, f"wide_{i:02d}.mp4")
+                if src:
+                    src_len = media_seconds(ffmpeg, src["path"])
+                    s0 = max(0.0, src["start"] - h_in)
+                    s1 = min(src_len, src["start"] + lens[i] + h_out)
+                    head, tail = h_in - (src["start"] - s0), h_out - (s1 - src["start"] - lens[i])
+                    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{s0:.3f}", "-t", f"{s1 - s0:.3f}", "-i", src["path"]]
+                    chain = src["vf"]
+                else:
+                    head, tail = h_in, h_out
+                    cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", part]
+                    chain = f"fps={fps},format=yuv420p"
+                chain += (f",tpad=start_mode=clone:start_duration={max(head, 0.0):.3f}:stop_mode=clone:stop_duration={max(tail, 0.0) + 0.5:.3f}"
+                          f",trim=duration={total:.3f},setpts=PTS-STARTPTS")
+                run(cmd + ["-vf", chain, "-an"] + enc + [out])
+                wide.append(out)
+            cmd = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+            for w in wide:
+                cmd += ["-i", w]
+            cmd += ["-i", base]
+            chains = [f"[{i}:v]setpts=PTS-STARTPTS,fps={fps},format=yuv420p,settb=AVTB[w{i}]" for i in range(len(wide))]
+            acc, cut_at = "w0", 0.0
+            for i in range(1, len(wide)):
+                cut_at += lens[i - 1]
+                if joins[i]:
+                    name, d = joins[i]
+                    chains.append(f"[{acc}][w{i}]xfade=transition={TRANSITIONS[name]}:duration={d:.3f}:offset={cut_at - d / 2:.3f}[x{i}]")
+                    used_transitions.append({"at": round(cut_at, 2), "type": name, "duration": d})
+                else:
+                    chains.append(f"[{acc}][w{i}]concat=n=2:v=1:a=0,fps={fps},settb=AVTB[x{i}]")
+                acc = f"x{i}"
+            base_fx = os.path.join(tmp, "base_fx.mp4")
+            run(cmd + ["-filter_complex", ";".join(chains), "-map", f"[{acc}]", "-map", f"{len(wide)}:a", "-t", f"{duration:.3f}"] + enc +
+                ["-c:a", "copy", base_fx])
+            base = base_fx
 
         layers, caption_lines, moved = [], [], []
         avoid = plan.get("avoid_faces", True)
@@ -1022,7 +1190,7 @@ def main():
                           "captions": len(plan.get("captions", [])), "caption_lines": caption_lines, "face_avoidance": moved,
                           "insets": len(plan.get("insets", [])), "end_card": bool(plan.get("end_card")),
                           "outro": bool(plan.get("outro")), "audio": {"music": bool(music), "sfx": len(sfx_indexes), "clip_audio": keep_audio},
-                          "preview_frames": previews, "warnings": warnings}, indent=2))
+                          "transitions": used_transitions, "preview_frames": previews, "warnings": warnings}, indent=2))
     finally:
         if args.keep_temp:
             print(json.dumps({"temp_dir": tmp}), file=sys.stderr)

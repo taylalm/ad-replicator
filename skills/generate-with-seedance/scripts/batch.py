@@ -5,7 +5,7 @@ The sandbox stops a tool call after about 2 minutes, while one Seedance clip tak
 after another therefore costs the sum of all clips; submitting them together costs about the slowest one.
 
   submit  Submit every clip in commands.sh (or only --clips) without waiting; task ids go to the state file.
-  wait    Poll every pending task for up to --max-wait seconds (default 100, under the tool limit), download finished
+  wait    Poll every pending task for up to --max-wait seconds (default 50: a bash call over 60 s is turned into a background task the agent would then poll), download finished
           videos, print a table. Call it again until "pending" is 0.
   status  Print the state file.
   (submit also starts a background poller that keeps the state file current, so the file never goes stale.)
@@ -242,7 +242,7 @@ def main():
     s.add_argument("--state", required=True)
     w = sub.add_parser("wait")
     w.add_argument("--state", required=True)
-    w.add_argument("--max-wait", type=float, default=100)
+    w.add_argument("--max-wait", type=float, default=50)  # under the platform's 60 s limit: a longer bash call becomes a background task
     w.add_argument("--interval", type=float, default=10)
     pl = sub.add_parser("poll")
     pl.add_argument("--state", required=True)

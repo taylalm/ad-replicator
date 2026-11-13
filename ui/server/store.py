@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import string
 import threading
 import time
@@ -100,6 +101,106 @@ def set_title_override(job_id: str, title: str) -> None:
     TITLE_OVERRIDES.write_text(json.dumps(data, indent=1, ensure_ascii=False))
 
 
+# ----------------------------------------------------------------------------- shared lists (folders, deletions)
+# The cloud site runs on several instances, each with its own disk. Lists every instance must agree on live in the TOS
+# bucket under meta/ (a small JSON object each); locally they are files next to the data dir.
+_SHARED: Dict[str, dict] = {}
+SHARED_TTL_S = 15
+
+
+def _shared_get(key: str, local: Path, fresh: bool = False) -> dict:
+    import time as _t
+    hit = _SHARED.get(key)
+    if not fresh and hit and _t.time() - hit["at"] < SHARED_TTL_S:
+        return hit["data"]
+    data = None
+    try:
+        import storage
+        if storage.enabled():
+            raw = storage.get_raw(key)
+            data = json.loads(raw) if raw else {}
+    except Exception:
+        data = None
+    if data is None:
+        try:
+            data = json.loads(local.read_text())
+        except (OSError, ValueError):
+            data = {}
+    data = data if isinstance(data, dict) else {}
+    _SHARED[key] = {"data": data, "at": _t.time()}
+    return data
+
+
+def _shared_put(key: str, local: Path, data: dict) -> None:
+    import time as _t
+    blob = json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True).encode()
+    saved = False
+    try:
+        import storage
+        if storage.enabled():
+            saved = storage.put_raw(key, blob)
+    except Exception:
+        saved = False
+    if not saved:
+        local.parent.mkdir(parents=True, exist_ok=True)
+        tmp = local.with_suffix(".tmp")
+        tmp.write_bytes(blob)
+        os.replace(tmp, local)
+    _SHARED[key] = {"data": data, "at": _t.time()}
+
+
+# Which folder each project is in ({job_id: folder name}); only the list grouping.
+FOLDERS_FILE = DATA_DIR.parent / "folders.json"
+FOLDERS_KEY = "meta/folders.json"
+
+
+def folders(fresh: bool = False) -> Dict[str, str]:
+    return {k: str(v) for k, v in _shared_get(FOLDERS_KEY, FOLDERS_FILE, fresh).items() if isinstance(k, str) and v}
+
+
+def set_folders(job_ids, folder: Optional[str]) -> Dict[str, str]:
+    """Moves the jobs into `folder` (None or "" = back to the main list). Returns the new map."""
+    data = dict(folders(fresh=True))
+    for j in job_ids:
+        if folder:
+            data[j] = folder
+        else:
+            data.pop(j, None)
+    _shared_put(FOLDERS_KEY, FOLDERS_FILE, data)
+    return data
+
+
+# Projects deleted on any instance ({job_id: deleted_at}): every instance drops its own copy and never rebuilds them
+# from the bucket or from ModelArk sessions (without this a deleted card came back from the other instances).
+DELETED_FILE = DATA_DIR.parent / "deleted.json"
+DELETED_KEY = "meta/deleted.json"
+
+
+def deleted_ids(fresh: bool = False) -> Dict[str, str]:
+    return {k: str(v) for k, v in _shared_get(DELETED_KEY, DELETED_FILE, fresh).items() if isinstance(k, str)}
+
+
+def mark_deleted(job_ids) -> None:
+    import time as _t
+    data = dict(deleted_ids(fresh=True))
+    for j in job_ids:
+        data[j] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+    _shared_put(DELETED_KEY, DELETED_FILE, data)
+
+
+def drop_deleted_copies() -> List[str]:
+    """Removes this instance's local copy of every project deleted elsewhere. Returns the ids removed here."""
+    import shutil
+    gone = deleted_ids()
+    removed = []
+    if gone and DATA_DIR.exists():
+        for p in DATA_DIR.iterdir():
+            if p.name in gone and p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                removed.append(p.name)
+    return removed
+
+
 def read_job(d: Path) -> dict:
     job = json.loads((d / "job.json").read_text())
     job.setdefault("id", d.name)
@@ -114,6 +215,43 @@ def read_job(d: Path) -> dict:
 def write_job(d: Path, job: dict) -> None:
     job["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     _atomic_write(d / "job.json", json.dumps(job, indent=1, ensure_ascii=False))
+
+
+def ai_label() -> bool:
+    """False when this site's ads carry no "AI-generated video" pill (UI_AI_LABEL=0, set by the build profile)."""
+    return os.environ.get("UI_AI_LABEL", "1") != "0"
+
+
+def last_edit_version(files_dir: Path) -> int:
+    """The highest final_edit_v<n>.mp4 of the job: most are only in the bucket, so the job's index counts too."""
+    try:
+        job = json.loads((files_dir.parent / "job.json").read_text())
+    except (OSError, ValueError):
+        job = {}
+    names = {p.name for p in files_dir.glob("final_edit_v*.mp4")} | set(job.get("files_index") or {}) | set(job.get("tos_files") or {})
+    return max((int(m.group(1)) for n in names if (m := re.fullmatch(r"final_edit_v(\d+)\.mp4", n))), default=0)
+
+
+def edit_plans(files_dir: Path) -> List[Path]:
+    """The agent's edit plans, oldest first. Disk times mean nothing after a restart (files come back in any order):
+    the session's creation time decides, then the version in the name."""
+    try:
+        index = json.loads((files_dir.parent / "job.json").read_text()).get("files_index") or {}
+    except (OSError, ValueError):
+        index = {}
+
+    def order(p: Path):
+        v = re.search(r"_v(\d+)", p.stem)
+        return (index.get(p.name) or {}).get("created_at") or 0, int(v.group(1)) if v else 0, p.stat().st_mtime
+    return sorted(files_dir.glob("edit_plan*.json"), key=order)
+
+
+def set_final_source(d: Path, source: str) -> None:
+    """Which cut is the ad now: "agent" (its newest final) or "edit" (the newest version made on the site)."""
+    with lock_for(d.name):
+        job = read_job(d)
+        job["final_source"] = source
+        write_job(d, job)
 
 
 def read_events(d: Path) -> List[dict]:

@@ -17,11 +17,14 @@ from derive import derive_job
 from paths import ma_client
 
 POLL_S = float(os.environ.get("UI_SYNC_POLL_S", "5"))
-AUTO_RESUMES = int(os.environ.get("UI_AUTO_RESUMES", "3"))  # "continue" messages after model rate limits, per job
+AUTO_RESUMES = int(os.environ.get("UI_AUTO_RESUMES", "8"))  # "continue" messages after model rate limits, per job
 FINISHED = {"done", "failed", "stopped", "awaiting_approval"}
 SLOW_POLL_S = 20
+NEVER_STARTED_S = 15 * 60  # a session still without a single event this long after it was made never got its brief
 # serverless: keep only small files on the instance disk; bigger media are served from ModelArk's presigned links
 MAX_DOWNLOAD = int(os.environ.get("UI_DOWNLOAD_MAX_BYTES") or 0)
+BUCKET_WAIT_S = 120  # how long a new process waits for the bucket's keys before it works from the sessions alone
+_STARTED = time.time()
 JOB_TITLE_RE = re.compile(r"\s*\[(job-[\w-]+)\]\s*$")
 DONE_POLL_S = 180  # delivered jobs: a revision can be sent from outside the UI (operator, API), so keep a slow check
 
@@ -30,17 +33,18 @@ def log(msg: str) -> None:
     print(f"[sync {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
 
 
-def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> List[str]:
+def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict], skip_ids=()) -> List[str]:
     """Downloads session files that are new or changed. `index` maps local name -> {id, bytes}.
     The API lists newest first; the newest copy of a repeated file name keeps the plain name,
-    older copies get a short id suffix (same convention as tools/ma_client.py)."""
+    older copies get a short id suffix (same convention as tools/ma_client.py).
+    skip_ids: files taken out of the project (POST .../prune), which must not come back."""
     dest.mkdir(parents=True, exist_ok=True)
     saved = []
     claimed: Dict[str, str] = {}
     for f in client.session_files(session_id):
         raw_name = f.get("filename") or f["id"]
         name = Path(raw_name).name
-        if f.get("status") not in (None, "active"):
+        if f.get("status") not in (None, "active") or f["id"] in skip_ids:
             continue
         if name in claimed and claimed[name] != f["id"]:
             stem, ext = os.path.splitext(name)
@@ -55,6 +59,8 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
         if known and known.get("id") == f["id"] and known.get("gone"):
             continue  # an overwritten older copy: its object no longer exists
         if known and known.get("tos") and known.get("bytes") == f.get("bytes") and (known.get("id") in (None, f["id"])):
+            if local.is_file() and not fresh:  # an older version on disk would be served instead of the bucket copy
+                local.unlink()
             continue  # already kept in the bucket (storage.py)
         url = f.get("download_url")
         if not url:
@@ -87,8 +93,28 @@ def sync_files(client, session_id: str, dest: Path, index: Dict[str, dict]) -> L
     return saved
 
 
+def agent_recut(job: dict, d: Path) -> None:
+    """A newer cut from the agent replaces what was edited on the site: the page plays it, and the scene picks, chosen
+    takes and caption document of the old cut go. The old versions stay stored and come back with the next site edit."""
+    import storage
+    job["final_source"] = "agent"
+    job["edits_after"] = store.last_edit_version(store.files_dir(d))
+    try:  # the user's own clips stay available (the agent's new cut already holds the ones it was told about)
+        old = json.loads((d / "web_scene_picks.json").read_text())
+        extras = [{**x, "include": False} for x in old.get("extras") or [] if isinstance(x, dict)]
+    except (OSError, ValueError, AttributeError):
+        extras = []
+    (d / "web_scene_picks.json").write_text(json.dumps({"scenes": {}, "extras": extras, "transitions": "keep"}))
+    takes = d / "web_takes.json"
+    if takes.exists():
+        takes.write_text(json.dumps([{**t, "accepted": False} for t in json.loads(takes.read_text())], indent=1, ensure_ascii=False))
+    (d / "captions_doc.json").unlink(missing_ok=True)
+    if storage.enabled():
+        storage.delete_keys([storage.key(job["id"], "captions_doc.json")])
+
+
 RECORDS = ("job.json", "events.json", "costs.json", "cost_cache.json", "captions_doc.json", "web_takes.json",
-           "web_paid_calls.json", "web_scene_picks.json", "web_edit_plan.json")
+           "web_paid_calls.json", "web_scene_picks.json", "web_edit_plan.json", "dropped_calls.json")
 _RECORDS_AT: Dict[str, float] = {}  # job id -> last upload of its records
 _RECORD_MTIME: Dict[str, float] = {}  # job id/name -> mtime uploaded
 
@@ -259,7 +285,8 @@ def fill_from_bucket(job: dict, d: Path, limit: int = 60) -> bool:
         if not (d / name).exists() and storage.download(job["id"], name, d / name):
             _RECORD_MTIME[f"{job['id']}/{name}"] = (d / name).stat().st_mtime
     got = 0
-    for name, meta in sorted((job.get("files_index") or {}).items()):
+    # records the page and the cost need (call log, plans, checks) first: only 60 files come back per pass
+    for name, meta in sorted((job.get("files_index") or {}).items(), key=lambda kv: (not kv[0].endswith(".json"), kv[0])):
         if not meta.get("tos") or (fd / name).exists():
             continue
         small = (meta.get("bytes") or 0) <= max(MAX_DOWNLOAD, 600_000) or name.endswith((".json", ".txt", ".md", ".sh"))
@@ -329,7 +356,7 @@ def restore_web_files(client, job: dict, d: Path) -> List[str]:
                 newest[pk[0]] = (pk[1], r)
         for name, (_, r) in newest.items():
             dest = d / name if name in ("captions_doc.json", "web_takes.json", "web_paid_calls.json", "web_scene_picks.json") else store.files_dir(d) / name
-            if dest.exists():
+            if dest.exists() or (name == "captions_doc.json" and job.get("final_source") == "agent"):  # belongs to the old cut
                 continue
             url = (client.get(f"/files/{r['file_id']}") or {}).get("download_url")
             if url:
@@ -387,6 +414,14 @@ class JobSyncer:
         ev = threading.Event()
         self.wake[job_id] = ev
         d = store.job_dir(job_id)
+        if d is not None and store.read_job(d).get("mode") == "sample_edit":  # no agent session: nothing to sync
+            import sample_edit
+            if store.read_job(d).get("fill_pending"):
+                t = threading.Thread(target=self._fill_only, args=(job_id,), name=f"fill-{job_id}", daemon=True)
+                self.threads[job_id] = t
+                t.start()
+            sample_edit.resume_if_stale(job_id)
+            return
         if d is not None and store.read_job(d).get("session_gone"):  # kept in the bucket, nothing left to sync
             t = threading.Thread(target=self._fill_only, args=(job_id,), name=f"fill-{job_id}", daemon=True)
             self.threads[job_id] = t
@@ -401,6 +436,12 @@ class JobSyncer:
         return bool(t and t.is_alive())
 
     def resume_all(self) -> None:
+        # the bucket's keys arrive with the first request. A project rebuilt from its session before that loses what only
+        # the site knows (removed runs, hidden versions), and the rebuilt record then overwrites the bucket's copy
+        import storage
+        wait_until = time.time() + BUCKET_WAIT_S
+        while storage.bucket() and not storage.enabled() and time.time() < wait_until:
+            time.sleep(1)
         try:
             self.discover()
         except Exception as e:
@@ -410,7 +451,11 @@ class JobSyncer:
                 job = store.read_job(d)
             except Exception:
                 continue
-            if job.get("demo") or job.get("frozen") or not job.get("session_id"):
+            if job.get("mode") == "sample_edit":
+                import sample_edit
+                sample_edit.resume_if_stale(job["id"])
+                continue
+            if job.get("demo") or job.get("frozen") or job.get("never_started") or not job.get("session_id"):
                 continue
             events = store.read_events(d)
             derived = derive_job(job, events, store.files_dir(d))
@@ -420,14 +465,17 @@ class JobSyncer:
     def discover(self) -> int:
         """Creates a job folder for every agent session started by this UI (title ends with [job-...]) that is not on
         disk yet: on a fresh serverless instance the job list is rebuilt from ModelArk itself."""
+        import storage
+        if storage.bucket() and not storage.enabled() and time.time() - _STARTED < BUCKET_WAIT_S:
+            return 0  # the bucket comes first; resume_all calls this again
         client = self.client()
         page, added, seen = None, 0, 0
         try:  # jobs kept in the bucket come back with their files, even after their session links expired
-            import storage
             if storage.enabled() and not _CATCHUP["done"]:
                 bucket_catchup()
+            gone = store.deleted_ids()
             for jid in storage.list_jobs():
-                if store.job_dir(jid) is None and restore_from_bucket(jid) is not None:
+                if jid not in gone and store.job_dir(jid) is None and restore_from_bucket(jid) is not None:
                     added += 1
         except Exception as e:
             log(f"bucket discovery: {type(e).__name__}: {str(e)[:160]}")
@@ -437,7 +485,7 @@ class JobSyncer:
             for sess in r.get("data", []):
                 seen += 1
                 m = JOB_TITLE_RE.search(sess.get("title") or "")
-                if not m or store.job_dir(m.group(1)) is not None or not own_session(sess):
+                if not m or store.job_dir(m.group(1)) is not None or not own_session(sess) or m.group(1) in store.deleted_ids():
                     continue
                 after = os.environ.get("UI_DISCOVER_AFTER")  # ISO time: older sessions' files are no longer downloadable
                 if after and (sess.get("created_at") or "") < after:
@@ -485,9 +533,15 @@ class JobSyncer:
                     job["inputs"] = inp
             if job.get("fill_pending"):
                 job["fill_pending"] = not fill_from_bucket(job, d)
+                job["costs_stale"] = job.get("costs_stale") or not job["fill_pending"]  # paid_calls.json etc. arrived
             index = job.get("files_index") or {}
-            saved = sync_files(self.client(), job["session_id"], store.files_dir(d), index)
+            cuts = lambda: {n: m.get("id") for n, m in index.items() if re.fullmatch(r"final(_v\d+)?\.mp4", n)}  # noqa: E731
+            before = cuts()
+            saved = sync_files(self.client(), job["session_id"], store.files_dir(d), index, set(job.get("dropped_file_ids") or ()))
             job["files_index"] = index
+            if before and cuts() != before:
+                agent_recut(job, d)
+                log(f"{job_id}: new agent cut")
             try:
                 mirror_files(self.client(), job, d)
             except Exception as e:
@@ -496,7 +550,7 @@ class JobSyncer:
             restore_web_files(self.client(), job, d)
             web_paid = d / "web_paid_calls.json"  # a regeneration made on the site changes the cost too
             stale = web_paid.exists() and (d / "costs.json").exists() and web_paid.stat().st_mtime > (d / "costs.json").stat().st_mtime
-            if new or saved or stale or not (d / "costs.json").exists():
+            if new or saved or stale or job.pop("costs_stale", False) or not (d / "costs.json").exists():
                 try:  # production time and cost of one video (official list prices), see costs.py
                     import costs
                     costs.fetch_seedance_usage(self.client(), d, store.files_dir(d))
@@ -529,34 +583,58 @@ class JobSyncer:
                 while not fill_from_bucket(job, d):
                     pass
                 job["fill_pending"] = False
+                job["costs_stale"] = True
                 store.write_job(d, job)
 
     def _auto_resume(self, job: dict, events: list) -> bool:
         """A session that went idle because the model provider stayed busy (retries exhausted on a rate limit or
         model error) is not waiting for anyone: after a minute, tell it to continue. At most AUTO_RESUMES times per job,
         never when a person has written since. Returns True when a message was sent."""
-        idle_i = next((i for i in range(len(events) - 1, -1, -1) if events[i].get("type") in ("session.status_idle", "session.status_running")), None)
-        if idle_i is None or events[idle_i].get("type") != "session.status_idle":
-            return False
-        if (events[idle_i].get("stop_reason") or {}).get("type") != "retries_exhausted":
+        from derive import parse_ts, stalled_index
+        idle_i = stalled_index(events)
+        if idle_i is None:
             return False
         err = next((e for e in reversed(events[:idle_i + 1]) if e.get("type") == "session.error"), None)
         kind = str(((err or {}).get("error") or {}).get("type") or "")
         if not kind.startswith("model_"):
             return False
-        if any(e.get("type") == "user.message" for e in events[idle_i:]) or job.get("auto_resumes", 0) >= AUTO_RESUMES:
+        n = job.get("auto_resumes", 0)
+        if any(e.get("type") == "user.message" for e in events[idle_i:]) or n >= AUTO_RESUMES:
             return False
-        from derive import parse_ts
+        # the rate limit is shared by every run on the account for this model: wait longer each time (1, 2, 4, 8, 10 min)
         at = parse_ts(events[idle_i].get("processed_at"))
-        if at is None or time.time() - at.timestamp() < 60:
+        if at is None or time.time() - at.timestamp() < min(60 * 2 ** n, 600):
             return False
+        client = self.client()
         try:
-            self.client().send_message(job["session_id"], "The model was busy for a moment (rate limit). Continue exactly where you left off.")
+            if events[idle_i].get("type") == "session.thread_status_idle" and (client.get_session(job["session_id"]) or {}).get("status") == "running":
+                client.interrupt(job["session_id"])  # the session never reported idle by itself: settle it first
+                deadline = time.time() + 30
+                while time.time() < deadline and (client.get_session(job["session_id"]) or {}).get("status") == "running":
+                    time.sleep(2)
+            client.send_message(job["session_id"], "The model was busy for a moment (rate limit). Continue exactly where you left off.")
         except Exception as e:
             log(f"{job['id']}: auto-resume failed: {type(e).__name__}: {str(e)[:160]}")
             return False
         job["auto_resumes"] = job.get("auto_resumes", 0) + 1
         log(f"{job['id']}: auto-resumed after {kind} ({job['auto_resumes']}/{AUTO_RESUMES})")
+        return True
+
+    def _never_started(self, job_id: str) -> bool:
+        """A session with no events at all NEVER_STARTED_S after it was made never got its brief (a start that failed
+        half-way, e.g. the sample video could not be attached). Marks the job so it shows as failed, and stops polling it."""
+        from derive import parse_ts
+        d = store.job_dir(job_id)
+        if d is None:
+            return True
+        with store.lock_for(job_id):
+            job = store.read_job(d)
+            made = parse_ts(job.get("created_at"))
+            if job.get("never_started") or store.read_events(d) or made is None or time.time() - made.timestamp() < NEVER_STARTED_S:
+                return bool(job.get("never_started"))
+            job["never_started"] = True
+            store.write_job(d, job)
+        log(f"{job_id}: no events {NEVER_STARTED_S // 60} min after it was made, marked as never started; polling stopped")
         return True
 
     def _run(self, job_id: str, wake: threading.Event) -> None:
@@ -567,6 +645,8 @@ class JobSyncer:
                 return
             try:
                 r = self.sync_once(job_id)
+                if r["status"] == "queued" and self._never_started(job_id):
+                    return
                 if r["status"] == "done":
                     idle_polls += 1
                     # two quiet polls after delivery: files land slightly after the idle event

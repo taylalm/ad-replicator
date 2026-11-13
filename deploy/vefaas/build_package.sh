@@ -45,8 +45,8 @@ cp "$ROOT/tools/ma_client.py" "$STAGE/tools/"
 # git); variables set on the function itself take priority
 IDS="$ROOT/${IDS_FILE:-.env}"
 if [ -f "$IDS" ]; then
-  grep -E '^[[:space:]]*(export[[:space:]]+)?MA_(AGENT|ENV|VAULT)_ID=' "$IDS" > "$STAGE/.env" || true
-  echo "[build] agent ids from ${IDS_FILE:-.env}: $(grep -c . "$STAGE/.env") of 3"
+  grep -E '^[[:space:]]*(export[[:space:]]+)?(MA_(AGENT_ID|ENV_ID|VAULT_ID|MEMORY_STORE_IDS)|ASSET_GROUP_ID)=' "$IDS" > "$STAGE/.env" || true
+  echo "[build] agent ids from ${IDS_FILE:-.env}: $(grep -c . "$STAGE/.env") lines (3 ids + optional MA_MEMORY_STORE_IDS, ASSET_GROUP_ID)"
 else
   echo "[build] WARNING: no ${IDS_FILE:-.env}: set MA_AGENT_ID, MA_ENV_ID and MA_VAULT_ID on the function"
 fi
@@ -79,16 +79,18 @@ if [ "${INCLUDE_DEMO:-0}" = "1" ] && [ -d "$ROOT/runs/demo_caseB" ]; then cp -R 
 # read-only copies of delivered jobs (ModelArk keeps session files for about a day). SHOWCASE_JOBS overrides the
 # list; SHOWCASE_JOBS="" ships none. Jobs without a folder in ui/data/jobs (e.g. a fresh clone) are skipped.
 SHOWCASE_JOBS=${SHOWCASE_JOBS:-}
+# SHOWCASE_SRC: the folder holding those job folders (default ui/data/jobs), e.g. cleaned copies kept out of git
+SRC_JOBS="$ROOT/${SHOWCASE_SRC:-ui/data/jobs}"
 FOUND_JOBS=""
 for job in $SHOWCASE_JOBS; do
-  if [ -f "$ROOT/ui/data/jobs/$job/job.json" ]; then
+  if [ -f "$SRC_JOBS/$job/job.json" ]; then
     FOUND_JOBS="$FOUND_JOBS $job"
   else
     echo "[build] showcase: no local folder for $job, skipped"
   fi
 done
 if [ -n "${FOUND_JOBS// /}" ]; then
-  "$ROOT/ui/.venv/bin/python" "$ROOT/deploy/vefaas/make_showcase.py" "$ROOT/ui/data/jobs" "$STAGE/runs/showcase" $FOUND_JOBS
+  "$ROOT/ui/.venv/bin/python" "$ROOT/deploy/vefaas/make_showcase.py" "$SRC_JOBS" "$STAGE/runs/showcase" $FOUND_JOBS
 else
   echo "[build] showcase: no example projects in this package"
 fi
@@ -136,19 +138,26 @@ export UI_DATA_DIR="${UI_DATA_DIR:-/tmp/ad-replicator/jobs}"
 export UI_DOWNLOAD_MAX_BYTES="${UI_DOWNLOAD_MAX_BYTES:-600000}"
 # list-price cost per job is shown (set UI_SHOW_COST=0 on the function to hide every amount)
 export UI_SHOW_COST="${UI_SHOW_COST:-1}"
+# the "AI-generated video" pill on site re-edits (AI_LABEL=0 in the build profile drops it)
+export UI_AI_LABEL="${UI_AI_LABEL:-__AI_LABEL__}"
+# SHOWCASE=1 in the build profile: a view-only site with the example projects only (no agent, nothing can change)
+export UI_SHOWCASE="${UI_SHOWCASE:-__SHOWCASE__}"
 # jobs started before this package was built are shipped as showcase copies or left out (their session files expire)
 export UI_DISCOVER_AFTER="${UI_DISCOVER_AFTER:-__BUILD_TIME__}"
 mkdir -p "$UI_DATA_DIR"
 # caption editor: the code folder is read-only and ZIP extraction may drop the execute bit, so run ffmpeg from /tmp
 FF_SRC=$(ls python_deps/imageio_ffmpeg/binaries/ffmpeg-linux-* 2>/dev/null | head -1)
+# copy under a temporary name, then rename (a plain copy fails while an older process still runs /tmp/ffmpeg); the
+# server checks the copy again on every request (paths.ensure_ffmpeg)
 if [ -n "$FF_SRC" ] && [ -z "${IMAGEIO_FFMPEG_EXE:-}" ]; then
-  cp "$FF_SRC" /tmp/ffmpeg && chmod +x /tmp/ffmpeg && export IMAGEIO_FFMPEG_EXE=/tmp/ffmpeg
+  cp "$FF_SRC" "/tmp/ffmpeg.$$" && chmod +x "/tmp/ffmpeg.$$" && mv -f "/tmp/ffmpeg.$$" /tmp/ffmpeg
+  export IMAGEIO_FFMPEG_EXE=/tmp/ffmpeg
 fi
 exec python3 -m uvicorn main:app --app-dir ui/server --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips '*'
 EOF
 
 # DISCOVER_AFTER (ISO time) keeps sessions started before this build on the job list, e.g. runs still under review
-sed -i.bak "s/__BUILD_TIME__/${DISCOVER_AFTER:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}/" "$STAGE/run.sh" && rm -f "$STAGE/run.sh.bak"
+sed -i.bak "s/__BUILD_TIME__/${DISCOVER_AFTER:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}/; s/__AI_LABEL__/${AI_LABEL:-1}/; s/__SHOWCASE__/${SHOWCASE:-0}/" "$STAGE/run.sh" && rm -f "$STAGE/run.sh.bak"
 find "$STAGE" -name "__pycache__" -type d -prune -exec rm -rf {} +
 # a package for another client must not mention any client name (deploy/profiles/leak_patterns.txt)
 if [ "${LEAK_CHECK:-1}" = "1" ] && { [ -n "${LEAK_PATTERNS:-}" ] || [ -f "$ROOT/deploy/profiles/leak_patterns.txt" ]; }; then

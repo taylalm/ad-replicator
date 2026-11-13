@@ -29,12 +29,21 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
     captions = (options or {}).get("captions") or "full"
     if captions not in ("full", "cta_only", "none"):
         captions = "full"
+    transitions = (options or {}).get("transitions") or "mix"
+    if transitions not in ("sample", "cut", "mix", "dissolve"):
+        transitions = "mix"
+    try:
+        retakes = min(3, max(0, int((options or {}).get("retakes", 1))))
+    except (TypeError, ValueError):
+        retakes = 1
     video = VIDEO_MODELS.get((options or {}).get("video_model") or DEFAULT_VIDEO, VIDEO_MODELS[DEFAULT_VIDEO])
     image = IMAGE_MODELS.get((options or {}).get("image_model") or DEFAULT_IMAGE, IMAGE_MODELS[DEFAULT_IMAGE])
     req = one_line(requirements)
     output_note = f"Output: about {length_s} s, {resolution}, 9:16 vertical."
-    if "Output:" not in req:
-        req = f"{req} / {output_note}" if req else output_note
+    # the form's length and resolution always win: an "Output: ..." line pasted into the requirements (for example copied
+    # from an older brief) once made the agent generate 480p for a job set to 720p (cost test, 9 Nov 2026)
+    req = " / ".join(part for part in re.split(r"\s+/\s+", req) if part and not part.lower().startswith("output:"))
+    req = f"{req} / {output_note}" if req else output_note
     lines = [
         f"SAMPLE_VIDEO: {sample_url.strip()}",
         f"PRODUCT_URL: {product_url.strip()}",
@@ -44,6 +53,8 @@ def compose_message(sample_url: str, product_url: str, requirements: str, budget
         f"AUTO_APPROVE: {'yes' if auto_approve else 'no'}",
         f"STEP_APPROVE: {'yes' if step_approve else 'no'}",
         f"CAPTIONS: {captions}",
+        f"TRANSITIONS: {transitions}",
+        f"RETAKES: {'no cap' if retakes == 0 else f'at most {retakes} per scene'}",
         f"VIDEO_MODEL: {video['label']} | {flags(video)}",
         f"IMAGE_MODEL: {image['label']} | {flags(image)}",
     ]

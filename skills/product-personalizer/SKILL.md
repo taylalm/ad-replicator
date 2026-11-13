@@ -9,7 +9,7 @@ Use `scripts/personalize.py`. It has two modes: `probe` (inspect the page) and `
 
 ## Workflow
 
-1. Install dependencies once per session. The first run takes about 1-2 minutes (Chromium plus system libraries); later runs are instant:
+1. Install dependencies once per session. The first run takes about a minute (Chromium plus a few system libraries); later runs are instant. The script copes with the sandbox's network by itself (outbound gateway certificate, HTTPS apt mirror, a direct browser download when Playwright's own fails): never install Chromium or libraries by hand and never patch `personalize.py`. It is safe to start in the background at the beginning of a run; a second call waits for the first:
 
 ```bash
 bash /mnt/skills/product-personalizer/scripts/ensure-deps.sh
@@ -35,7 +35,7 @@ python3 /mnt/skills/product-personalizer/scripts/personalize.py probe \
 python3 /mnt/skills/product-personalizer/scripts/personalize.py run --plan /mnt/session/outputs/personalizer/plan_lily.json
 ```
 
-6. Read the run's JSON first: `options` (each choice and whether it stayed selected), `warning`, `reapplied_options`, `recovered_from` and capture `method` explain most problems without a rerun. The script confirms photo-editor dialogs, re-applies options the page reset and falls back through several capture methods by itself (see `references/action_plan.md`). Then open every captured image. Confirm the name is spelled correctly, the photo or avatar appears, and the chosen options show. Then crop and zoom into the artwork and check it is ad-safe: no profanity, rude gestures, other brands or off-brand content (see the content check in `references/action_plan.md`). If a step failed, read `error_step_XX.png`, fix that step and rerun the whole plan once. If it fails again, stop and report. To save time with several people, personalize them in one page load (one capture per person) instead of one run each.
+6. Read the run's JSON first: `failed_requests` (requests of the store page that failed or returned an HTTP error; a photo preview that never renders usually shows its service here: report that URL and stop retrying the same plan), `options` (each choice and whether it stayed selected), `warning`, `reapplied_options`, `recovered_from` and capture `method` explain most problems without a rerun. The script confirms photo-editor dialogs, re-applies options the page reset and falls back through several capture methods by itself (see `references/action_plan.md`). Then open every captured image. Confirm the name is spelled correctly, the photo or avatar appears, and the chosen options show. Then crop and zoom into the artwork and check it is ad-safe: no profanity, rude gestures, other brands or off-brand content (see the content check in `references/action_plan.md`). If a step failed, read `error_step_XX.png`, fix that step and rerun the whole plan once. If it fails again, stop and report. To save time with several people, personalize them in one page load (one capture per person) instead of one run each.
 
 7. Capture two or three more personalized variants in the same run (different colour, quote/animal, name) with `capture_dialog` on the site's preview dialog, for the options montage.
 8. Report the preview path(s), the variant dialog screenshots and the gallery files. The preview is the product's source of truth (which side carries what, where the portrait sits); describe that layout in words for the prompt step.

@@ -165,6 +165,7 @@ git clone https://github.com/taylalm/ad-replicator.git
 | `agent/` | `system_prompt.md` (the agent's instructions), `agent_config.json` (a snapshot of the agent's settings) | You change the workflow or rules (7.4) |
 | `skills/` | The seven skills, each with `SKILL.md`, `scripts/` and `references/` | You change what a step does (7.3) |
 | `tools/ma_client.py` | Command-line client for the Managed Agents API (standard library only) | Rarely |
+| `tools/setup_account.py` | One-command setup of Part B (environment, vault, skills, lessons, agent) with your key; run it again to release updates | At setup, and after pulling a new version |
 | `tools/zip_skills.sh` | Packs each skill as a ZIP for uploading in the console | Never |
 | `ui/server/` | Web app back end (FastAPI): sessions, sync, cost, bucket, regeneration, caption export | You change the web app (7.6) |
 | `ui/web/` | Web app front end (Next.js, exported as static pages) | You change the web app (7.6) |
@@ -199,7 +200,23 @@ Throughout the guide:
 - Auth header: `Authorization: Bearer $ARK_API_KEY`
 - Never write the key into a file; export it in the terminal.
 
-Time to build: about half a day for Parts A-D, if the account already has model access.
+Time to build: about half a day for Parts A-D by hand, if the account already has model access. With the one-command setup below, Part B takes a few minutes.
+
+### Quick setup (one command)
+
+After Part A (models activated, API key created), one command does all of Part B in your account and writes the IDs into `.env`:
+
+```bash
+git clone https://github.com/taylalm/ad-replicator.git && cd ad-replicator
+export ARK_API_KEY=...                         # or leave it unset: the script asks for it and does not show it
+python3 tools/setup_account.py --check --build
+```
+
+- It creates the sandbox environment, a vault whose credential gives the sandbox your key as `ARK_API_KEY` (only towards `ark.ap-southeast.bytepluses.com`), the seven skills, a memory store with the lessons, and the agent from `agent/agent_config.json` and `agent/system_prompt.md`.
+- `--check` starts one short session (a few cents of agent tokens) that confirms the skills are mounted and the key works in the sandbox. `--build` then builds `deploy/vefaas/dist/ad-replicator.zip` with your IDs (needs Node 20+).
+- The key is sent only to the ModelArk API (and once into the vault). It is never printed or written to a file.
+- Run it again after pulling a new version of the repository: it reuses the IDs in `.env`, uploads new skill versions and updates the agent. After rotating the key, add `--replace-key`.
+- Then continue with Part C (upload the ZIP to veFaaS, set `ARK_API_KEY` and `UI_BASIC_AUTH`) and Part D (bucket storage). Part B below explains each piece if you prefer the console.
 
 ### Your values
 
@@ -245,11 +262,11 @@ export ARK_API_KEY=...   # your key; never write it into a file
 | Seedream 5.0 pro | `dola-seedream-5-0-pro-260628` | People, stills, edits (default) |
 | Seedance 2.5 | `dreamina-seedance-2-5-260628` | Clips (default) |
 | Seed 2.0 lite | `seed-2-0-lite-260428` | Clip checks and the quality gate |
-| Optional: Seedance 2.0, 2.0 fast and 2.0 mini; Seedream 5.0 flash | `dreamina-seedance-2-0-260128`, `dreamina-seedance-2-0-fast-260128`, `dreamina-seedance-2-0-mini-260615`, `dola-seedream-5-0-flash-260915` | Cheaper or faster runs |
+| Seedance 2.0 fast and 2.0 mini; Seedream 5.0 flash | `dreamina-seedance-2-0-fast-260128`, `dreamina-seedance-2-0-mini-260615`, `dola-seedream-5-0-flash-260915` | The New video form's "Economy" and "Balanced" settings (Balanced is the default) |
+| Optional: Seedance 2.0 | `dreamina-seedance-2-0-260128` | Another quality/cost step |
 
-**A2. (Only for the optional models) Create inference endpoints.**
-- The web app calls the optional models through your account's endpoints (`ep-...`).
-- Create one endpoint per optional model and note the IDs.
+**A2. (Only if your account requires it) Create inference endpoints.**
+- The web app calls the models by their model ID. If your account only allows a model through an endpoint, create one endpoint per such model and note the IDs (`ep-...`).
 - They go into `ui/server/models.py` in step C1.
 
 **A3. Create an API key** on the API keys page.
@@ -640,17 +657,18 @@ Within a few minutes of a run:
 
 **5.1 Make an ad.**
 1. In the web app, click **New video**.
-2. Add the sample: upload it, or paste a Facebook / YouTube / Instagram link.
+2. Add the sample: upload it, or paste a link. Public Facebook reels, posts and ads and direct MP4 links are downloaded by the web app. YouTube and Instagram often refuse downloads from a server and TikTok always does: save those videos and upload the file.
 3. Paste the product page URL.
 4. Write the brief: audience, what to avoid, approved offer wording, CTA.
-5. Choose the video and image models, the caption mode and the approval mode, then click **Start**.
+5. Choose **Cost and speed** (Economy, Balanced or Best quality; it sets the video and image models, the resolution and the retakes per scene, each of which you can still change), the transitions between scenes, the caption mode and the approval mode, then click **Start**.
+   - Footage of your own (an intro, an outro, a scene you filmed) can be added as a reference file with a note saying where it goes, e.g. "my intro, play first". The agent puts it in the ad as it is.
 
 **5.2 Approve the plan.**
 - The plan shows the cast, the options per person, the shot list next to the sample's scenes, the new captions and the cost estimate.
 - Approve it, or ask for changes in plain words.
 - With auto-approve on, the run continues without waiting.
 
-**5.3 Follow the run.** Each step shows its outputs as they arrive: people, website previews, stills, clips with their check verdicts. A run usually takes about an hour.
+**5.3 Follow the run.** Each step shows its outputs as they arrive: people, website previews, stills, clips with their check verdicts. A 20 s ad usually takes 45-90 minutes, depending on the product page, the models and how many scenes need a retake.
 
 **5.4 Review the result.** The final plays next to the sample, with:
 - the C1-C8 scores and their evidence
@@ -664,7 +682,12 @@ Within a few minutes of a run:
 4. Compare the new take with the current one and its check result.
 5. Click **Use this take**, then **Rebuild final**.
 
-The scene picker lists every take of a scene.
+The scene picker lists every take of a scene. Below it:
+- **Transitions between scenes:** one choice for every cut (varied, dissolve, fades, slides, wipes, zoom and more, or hard cuts). The ad keeps its length.
+- **Your own clips:** upload a video or picture, choose where it goes (start, after a scene, after the last scene, at the very end) and which part plays, with or without its sound. Captions after it move with it.
+Both take effect with **Rebuild** and cost nothing: no model is called.
+
+**5.5b Edit the sample (optional mode).** **Edit the sample** on the New video menu changes the sample video itself instead of rebuilding it: it swaps the people and the product, piece by piece, with Seedance video edits. It needs no agent and takes minutes, but needs your own product pictures and the asset library (see 7.4, `ASSET_GROUP_ID`).
 
 **5.6 Edit captions.**
 - Move, edit, retime or turn off each caption and the photo inset.
@@ -942,6 +965,9 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 | `UI_SHOW_COST` | 1 | 0 hides every amount |
 | `UI_DOWNLOAD_MAX_BYTES` | 600000 | Files above this size are streamed from the bucket instead of copied to the instance |
 | `UI_DISCOVER_AFTER` | build time | Sessions started before this time are not listed as projects |
+| `MA_MEMORY_STORE_IDS` | none | Memory stores with lessons learned from retakes, mounted read-only on every new session (create and fill one with `tools/lessons_publish.py` from `skills/ugc-seedance-prompt-craft/references/lessons/generic`) |
+| `ASSET_GROUP_ID` | none | Asset library group for "Edit the sample" (create it with `tools/asset_client.py create-group`) |
+| `BYTEPLUS_ACCESS_KEY`, `BYTEPLUS_SECRET_KEY` | none | Access key of an IAM user with the ModelArk asset permissions, for "Edit the sample" (or give the function's role those permissions) |
 
 ---
 
@@ -980,7 +1006,8 @@ every clip, regenerate a FAIL at most twice) ... 9 quality-check ... 10 retries 
 - **Agent-model rate limits:** about 3-4 parallel sessions; the web app resumes stalled runs.
 - **Real people in samples:** Seedance refuses inputs that show real people. So the sample video itself is never edited; it guides the new ad through words and faceless staging frames.
 - **Website previews:** a product page that does not draw the personalization in its own preview (e.g. a pet-portrait blanket) stops the agent for a decision.
-- **Social links:** TikTok blocks the cloud server; upload TikTok samples as files.
+- **Social links:** TikTok blocks the cloud server, and YouTube and Instagram often do; upload those samples as files.
+- **Photo-to-cartoon previews:** some product pages turn the customer photo into a cartoon on a third-party service that does not finish in the sandbox's browser. After two such attempts the agent uses a product mockup you uploaded, or builds one from the page's own design example and says so in the report.
 - **Long runs:** the agent sometimes switches language mid-run. The web app tolerates it, and the prompt keeps English as the rule.
 - **Physics and anatomy:** prompts and checks reduce problems but don't remove them. A clip can be kept as "best available", with the reason stated.
 

@@ -58,6 +58,9 @@ export function ClipStudio({ job, clip, gen, refresh, prompt, stillPrompt, first
   const [payoff, setPayoff] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
+  const [reasons, setReasons] = useState<string[]>([]);
+  const [askChecker, setAskChecker] = useState<string | null>(null);  // take file whose failed check the user may judge
+  const [checkerNoted, setCheckerNoted] = useState<string | null>(null);
   const [target, setTarget] = useState("clip");
   const [draftSent, setDraftSent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -84,19 +87,32 @@ export function ClipStudio({ job, clip, gen, refresh, prompt, stillPrompt, first
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
-  const accept = async (file: string) => {
+  const accept = async (file: string, checkerWrong?: boolean) => {
     setError(null);
     try {
-      const r = await genApi.accept(job.id, file);
+      const r = await genApi.accept(job.id, file, checkerWrong);
       if (r.rebuild) onRebuild?.(r.rebuild);  // a clip take goes straight into the ad
+      // a take the automatic check failed: ask once whether the check was wrong (checker calibration)
+      const tk = takes.find((x) => x.file === file);
+      if (checkerWrong === undefined && tk?.check?.verdict && tk.check.verdict !== "PASS" && tk.checker_wrong === undefined) setAskChecker(file);
+      if (checkerWrong !== undefined) { setAskChecker(null); setCheckerNoted(file); }
       await refresh();
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
+  const CheckerAsk = ({ file }: { file: string }) => askChecker === file ? (
+    <div className="space-y-1 rounded-md bg-warning/10 p-1.5 text-[11px]">
+      <p>{s.studio.checkerAsk}</p>
+      <div className="flex flex-wrap gap-1">
+        <Button size="sm" variant="outline" className="h-6 rounded-full text-[11px]" onClick={() => accept(file, true)}>{s.studio.checkerWrong}</Button>
+        <Button size="sm" variant="ghost" className="h-6 rounded-full text-[11px]" onClick={() => accept(file, false)}>{s.studio.checkerRight}</Button>
+      </div>
+    </div>
+  ) : checkerNoted === file ? <p role="status" className="text-[11px] text-success">{s.studio.checkerNoted}</p> : null;
   const askAgent = async () => {
     setError(null); setBusy(true);
     try {
-      await genApi.draft(job.id, { clip: clip.id, target, feedback: feedback.trim(), model: target === "still" ? imageModel : videoModel, attachments });
-      setDraftSent(true); setFeedback("");
+      await genApi.draft(job.id, { clip: clip.id, target, feedback: feedback.trim(), model: target === "still" ? imageModel : videoModel, attachments, reasons });
+      setDraftSent(true); setFeedback(""); setReasons([]);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
@@ -110,6 +126,16 @@ export function ClipStudio({ job, clip, gen, refresh, prompt, stillPrompt, first
         <h4 className="flex items-center gap-1.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase"><Bot className="size-3.5" aria-hidden />{s.studio.askAgent}</h4>
         <p className="text-xs text-muted-foreground">{s.studio.askAgentHint}</p>
         <Textarea value={feedback} rows={2} onChange={(e) => setFeedback(e.target.value)} placeholder={s.studio.feedbackPlaceholder} disabled={readOnly} className="rounded-lg text-sm" aria-label={s.studio.askAgent} />
+        <div className="flex flex-wrap items-center gap-1 text-xs" role="group" aria-label={s.studio.reasonsLabel} title={s.studio.reasonsHint}>
+          <span className="text-muted-foreground">{s.studio.reasonsLabel}</span>
+          {Object.entries(s.studio.reasons).map(([k, v]) => (
+            <button key={k} type="button" disabled={readOnly} aria-pressed={reasons.includes(k)}
+              onClick={() => setReasons((r) => (r.includes(k) ? r.filter((x) => x !== k) : [...r, k]))}
+              className={cn("rounded-full border px-2 py-0.5", reasons.includes(k) ? "border-brand bg-brand text-brand-foreground" : "border-input bg-background text-muted-foreground hover:text-foreground")}>
+              {v}
+            </button>
+          ))}
+        </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <label className="inline-flex items-center gap-1">{s.studio.target}
             <select className={select} value={target} onChange={(e) => setTarget(e.target.value)} disabled={readOnly}>
@@ -204,6 +230,7 @@ export function ClipStudio({ job, clip, gen, refresh, prompt, stillPrompt, first
                   </Button>
                   <DownloadButton url={fileApi(job, tk.file)} name={tk.file} label="" />
                 </div>
+                <CheckerAsk file={tk.file} />
               </figure>
             ))}
           </div>

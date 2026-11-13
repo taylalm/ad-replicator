@@ -10,7 +10,7 @@ after another cost 10-15 minutes. This starts them as detached processes, a few 
 jobs.json is a list of {"name": "edit_couch_theo", "args": ["--prompt", "...", "--image", "/path/plain.png",
 "--image", "/path/product_theo.png", "--download", "/mnt/session/outputs/07_clips", "--name", "edit_couch_theo"]}:
 the arguments of one generate-with-seedream seedream-generate.mjs call (--confirmed is added). `run` starts what is not started yet, waits up
-to --max-wait seconds (default 100), and prints a table; call it again until "pending" is 0. A job whose process ended
+to --max-wait seconds (default 50, under the platform's 60 s foreground limit), and prints a table; call it again until "pending" is 0. A job whose process ended
 without a clear result is marked "uncertain" and never started again (it may have been billed).
 Standard library only.
 """
@@ -150,7 +150,7 @@ def main():
     r.add_argument("--jobs", required=True)
     r.add_argument("--state", required=True)
     r.add_argument("--parallel", type=int, default=4)
-    r.add_argument("--max-wait", type=float, default=100)
+    r.add_argument("--max-wait", type=float, default=50)  # under the platform's 60 s limit: a longer bash call becomes a background task
     r.add_argument("--background", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
     run(a)

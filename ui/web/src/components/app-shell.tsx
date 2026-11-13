@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api";
 import { t } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { cn, SHOWCASE } from "@/lib/utils";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -34,7 +34,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const nav = [
     { href: "/", label: s.app.nav.history, icon: History, active: pathname === "/" || pathname.startsWith("/job") },
     { href: "/new", label: s.app.nav.newVideo, icon: Plus, active: pathname.startsWith("/new") },
-  ];
+  ].filter((n) => !SHOWCASE || n.href !== "/new");
 
   return (
     <div className="flex min-h-screen flex-col">

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import store
-from paths import REPO, load_module
+from paths import REPO, ensure_ffmpeg, load_module
 
 ASSEMBLY = REPO / "skills" / "video-assembly" / "scripts"
 _A = None
@@ -51,7 +51,7 @@ def _local(d: Path, name: str, remote_url: Callable[[str], Optional[str]]) -> Op
 
 
 def _plan(files_dir: Path) -> Optional[dict]:
-    plans = sorted(files_dir.glob("edit_plan*.json"), key=lambda p: p.stat().st_mtime)
+    plans = store.edit_plans(files_dir)
     for p in reversed(plans):
         try:
             return json.loads(p.read_text())
@@ -120,7 +120,7 @@ def load_doc(d: Path, names: set, final_file: Optional[str]) -> dict:
 
 
 def save_doc(d: Path, doc: dict) -> dict:
-    keep = {k: doc.get(k) for k in ("version", "size", "fps", "base", "captions", "insets", "reference_captions", "outro_start")}
+    keep = {k: doc.get(k) for k in ("version", "size", "fps", "base", "captions", "insets", "reference_captions", "outro_start", "cut")}
     for c in keep.get("captions") or []:
         c["text"] = str(c.get("text", ""))[:110]
         c["x"] = min(0.85, max(0.15, float(c.get("x", 0.5))))
@@ -163,6 +163,7 @@ def make_thumb(video: Path) -> Optional[Path]:
     """A frame of a new version for the History card (final_edit_vN_thumb.jpg)."""
     try:
         import imageio_ffmpeg
+        ensure_ffmpeg()
         out = video.with_name(video.stem + "_thumb.jpg")
         subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y", "-ss", "1.0", "-i", str(video),
                         "-frames:v", "1", "-vf", "scale=360:-2,format=yuvj420p", "-q:v", "4", str(out)], check=False, timeout=60)
@@ -172,8 +173,7 @@ def make_thumb(video: Path) -> Optional[Path]:
 
 
 def next_version(files_dir: Path) -> int:
-    nums = [int(m.group(1)) for p in files_dir.glob("final_edit_v*.mp4") if (m := re.match(r"final_edit_v(\d+)\.mp4$", p.name))]
-    return max(nums, default=0) + 1
+    return store.last_edit_version(files_dir) + 1
 
 
 def start_export(job_id: str, d: Path, doc: dict, remote_url, persist: Callable[[Path, str], None]) -> dict:
@@ -185,13 +185,14 @@ def start_export(job_id: str, d: Path, doc: dict, remote_url, persist: Callable[
 
     def work():
         try:
+            ensure_ffmpeg()
             files_dir = store.files_dir(d)
             base = _local(d, doc.get("base") or "", remote_url)
             if not base:
                 raise RuntimeError("the clean master (final without text) is not available for this job")
             run_doc = json.loads(json.dumps(doc))
             disclaimer = (_plan(files_dir) or {}).get("disclaimer")
-            if disclaimer:  # the clean master has no AI disclaimer: lay the agent's back on
+            if disclaimer and store.ai_label():  # the clean master has no AI disclaimer: lay the agent's back on
                 run_doc["disclaimer"] = disclaimer
             for ins in run_doc.get("insets") or []:
                 img = _local(d, ins.get("image", ""), remote_url)
@@ -204,6 +205,7 @@ def start_export(job_id: str, d: Path, doc: dict, remote_url, persist: Callable[
             res = json.loads(r.stdout[r.stdout.find("{"):]) if "{" in r.stdout else {}
             if r.returncode != 0 or not res.get("ok"):
                 raise RuntimeError((res.get("error") or r.stderr or r.stdout)[-400:])
+            store.set_final_source(d, "edit")
             state.update(state="done", file=name, warnings=res.get("warnings") or [])
             thumb = make_thumb(files_dir / name)
             keep = [(files_dir / name, f"web_{name}"), (doc_path(d), "web_captions_doc.json")] + ([(thumb, f"web_{thumb.name}")] if thumb else [])

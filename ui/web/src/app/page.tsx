@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Plus, Sparkles } from "lucide-react";
+import { ChevronRight, Folder, Plus, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 import { JobCard } from "@/components/job-card";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { api, type JobRow } from "@/lib/api";
 import { t } from "@/i18n";
+import { SHOWCASE } from "@/lib/utils";
 
 const DEMO_KEY = "ad-replicator-demo-mode";
 
@@ -50,6 +51,15 @@ export default function HistoryPage() {
 
   const visible = (jobs ?? []).filter((j) => (demo ? true : !j.demo));
   const demoCount = (jobs ?? []).filter((j) => j.demo).length;
+  const mainList = visible.filter((j) => !j.folder);
+  const folderNames = Array.from(new Set((jobs ?? []).map((j) => j.folder).filter((f): f is string => !!f))).sort();
+  const folderGroups = folderNames.map((name) => ({ name, jobs: visible.filter((j) => j.folder === name) })).filter((g) => g.jobs.length);
+  const removeJob = (id: string) => setJobs((prev) => (prev || []).filter((x) => x.id !== id));
+  const renameJob = (id: string, title: string) => setJobs((prev) => (prev || []).map((x) => (x.id === id ? { ...x, title } : x)));
+  const moveJob = (id: string, folder: string | null) => setJobs((prev) => (prev || []).map((x) => (x.id === id ? { ...x, folder } : x)));
+  const card = (j: JobRow, i: number) => (
+    <JobCard key={j.id} job={j} index={i} onDeleted={removeJob} onRenamed={renameJob} folders={folderNames} onMoved={SHOWCASE ? undefined : moveJob} />
+  );
 
   return (
     <div className="space-y-8">
@@ -58,10 +68,12 @@ export default function HistoryPage() {
           <h1 className="font-display text-4xl font-medium tracking-tight sm:text-5xl">{s.history.title}</h1>
           <p className="mt-3 text-[15px] leading-relaxed text-muted-foreground">{s.history.subtitle}</p>
         </div>
-        <Button size="lg" className="h-11 rounded-full bg-brand px-5 text-base text-brand-foreground shadow-soft hover:bg-brand/90" nativeButton={false} render={<Link href="/new" />}>
-          <Plus className="size-4" />
-          {s.history.newVideo}
-        </Button>
+        {!SHOWCASE && (
+          <Button size="lg" className="h-11 rounded-full bg-brand px-5 text-base text-brand-foreground shadow-soft hover:bg-brand/90" nativeButton={false} render={<Link href="/new" />}>
+            <Plus className="size-4" />
+            {s.history.newVideo}
+          </Button>
+        )}
       </header>
 
       {demoCount > 0 && (
@@ -98,16 +110,27 @@ export default function HistoryPage() {
           <div className="mx-auto grid size-14 place-items-center rounded-2xl bg-brand-soft text-brand"><Sparkles className="size-6" aria-hidden /></div>
           <h2 className="mt-4 font-display text-2xl font-medium">{s.history.emptyTitle}</h2>
           <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">{demo && demoCount === 0 ? s.history.emptyDemo : s.history.emptyBody}</p>
-          <Button className="mt-6 rounded-full bg-brand text-brand-foreground hover:bg-brand/90" size="lg" nativeButton={false} render={<Link href="/new" />}>
-            <Plus className="size-4" />{s.history.newVideo}
-          </Button>
+          {!SHOWCASE && (
+            <Button className="mt-6 rounded-full bg-brand text-brand-foreground hover:bg-brand/90" size="lg" nativeButton={false} render={<Link href="/new" />}>
+              <Plus className="size-4" />{s.history.newVideo}
+            </Button>
+          )}
         </div>
       ) : (
-        <ul className="grid gap-4 md:grid-cols-2">
-          {visible.map((j, i) => <JobCard key={j.id} job={j} index={i}
-            onDeleted={id => setJobs(prev => (prev || []).filter(x => x.id !== id))}
-            onRenamed={(id, title) => setJobs(prev => (prev || []).map(x => x.id === id ? { ...x, title } : x))} />)}
-        </ul>
+        <div className="space-y-6">
+          {mainList.length > 0 && <ul className="grid gap-4 md:grid-cols-2">{mainList.map(card)}</ul>}
+          {folderGroups.map((g) => (
+            <details key={g.name} className="group/folder rounded-2xl bg-card/60 ring-1 ring-foreground/8 open:pb-4">
+              <summary className="flex cursor-pointer list-none items-center gap-2 rounded-2xl px-4 py-3 outline-none hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="size-4 text-muted-foreground transition-transform group-open/folder:rotate-90" aria-hidden />
+                <Folder className="size-4 text-brand" aria-hidden />
+                <span className="font-display text-lg font-medium">{g.name}</span>
+                <span className="text-sm text-muted-foreground">· {s.history.folderCount(g.jobs.length)}</span>
+              </summary>
+              <ul className="grid gap-4 px-4 pt-2 md:grid-cols-2">{g.jobs.map(card)}</ul>
+            </details>
+          ))}
+        </div>
       )}
     </div>
   );

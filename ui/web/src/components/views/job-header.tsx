@@ -51,17 +51,19 @@ export function JobHeader({ job, title, subtitle, replay }: {
           <Meta label={s.common.createdAt}>{fmtDate(job.created_at)}</Meta>
           <Meta label={s.live.productionTime}>{job.production ? fmtDuration(job.production.production_s) : "–"}</Meta>
           {job.production?.waiting_s ? <Meta label={s.live.waitingTime}>{fmtDuration(job.production.waiting_s)}</Meta> : null}
-          <Meta label={s.common.product}>
+          {job.mode === "sample_edit" ? (
+            <Meta label={s.edit.model}>{s.newJob.models.names[job.edit?.options.video_model ?? ""] ?? job.edit?.options.video_model} · {job.edit?.options.resolution}</Meta>
+          ) : <Meta label={s.common.product}>
             {job.inputs.product_url ? (
               <a href={job.inputs.product_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-brand underline-offset-2 hover:underline">
                 {hostOf(job.inputs.product_url)}<ExternalLink className="size-3" aria-hidden />
               </a>
             ) : "–"}
-          </Meta>
-          <Meta label={s.common.tokens}>
+          </Meta>}
+          {job.mode !== "sample_edit" && <Meta label={s.common.tokens}>
             {cost ? <CostButton onClick={() => setCostOpen(true)}>{fmtTokens(tokens)} · {toolCalls} {s.common.toolCalls}</CostButton>
               : <>{fmtTokens(tokens)} · {toolCalls} {s.common.toolCalls}</>}
-          </Meta>
+          </Meta>}
           {cost?.total_usd != null && (
             <Meta label={s.live.cost}><CostButton onClick={() => setCostOpen(true)}>{usd(cost.total_usd)}</CostButton></Meta>
           )}

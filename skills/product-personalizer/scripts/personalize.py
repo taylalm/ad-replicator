@@ -43,16 +43,38 @@ def launch():
     except ImportError:
         fail("Playwright missing: run bash /mnt/skills/product-personalizer/scripts/ensure-deps.sh first")
     pw = sync_playwright().start()
+    # A sandbox whose outbound gateway re-signs HTTPS with its own CA (the file below exists there): ensure-deps.sh adds
+    # that CA to Chromium's trust store. It must be trusted, not ignored: Chrome turns off service workers and other
+    # features on pages with certificate errors, and a store's photo-to-cartoon preview then never renders (13 Nov 2026,
+    # reading socks). Only when the CA could not be added are the certificate errors ignored, so pages still load.
+    ignore_errors = (os.path.exists("/usr/local/share/ca-certificates/egress-ca.crt")
+                     and not os.path.exists(os.path.expanduser("~/.pki/nssdb/.egress_ca_added")))
     try:
         browser = pw.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
     except Exception as error:
         pw.stop()
         fail(f"Chromium failed to start: {str(error)[:400]}. Run ensure-deps.sh.")
     context = browser.new_context(viewport={"width": 1280, "height": 1600}, user_agent=UA,
-                                  locale="en-US", device_scale_factor=1)
+                                  locale="en-US", device_scale_factor=1, ignore_https_errors=ignore_errors)
     page = context.new_page()
     page.set_default_timeout(15000)
+    # failed requests and HTTP errors of the page, for the run report: a preview that never renders (e.g. a store's
+    # photo-to-cartoon service unreachable from the sandbox) shows up here instead of as a blank canvas only
+    page._net_failures = []
+
+    def _failed(req, why):
+        if len(page._net_failures) < 40 and not req.url.startswith("data:"):
+            page._net_failures.append({"url": req.url[:160], "type": req.resource_type, "error": str(why)[:120]})
+    page.on("requestfailed", lambda req: _failed(req, req.failure))
+    page.on("response", lambda resp: _failed(resp.request, f"HTTP {resp.status}") if resp.status >= 400 else None)
     return pw, browser, page
+
+
+def net_failures(page):
+    """The page's failed requests that are not ads or trackers (they fail for everyone)."""
+    noise = ("google-analytics", "googletagmanager", "doubleclick", "facebook", "tiktok", "pinterest", "hotjar", "clarity",
+             "bing.com", "snapchat", "klaviyo", "sentry", "/collect", "analytics", "pixel")
+    return [f for f in getattr(page, "_net_failures", []) if not any(n in f["url"].lower() for n in noise)][:20]
 
 
 def open_page(page, url):
@@ -592,6 +614,7 @@ def run(args):
                                 "seconds": round(time.time() - started, 1)})
                     out({"ok": False, "url": url, "http_status": status, "failed_step": i + 1, "log": log, "captures": captures,
                          "options": option_report(options), "seconds": round(time.time() - run_started, 1),
+                         "failed_requests": net_failures(page),
                          "hint": "Look at the error screenshot, fix that step (or mark it \"optional\": true) and rerun the whole plan."}, 1)
             entry["seconds"] = round(time.time() - started, 1)
             if step.get("snapshot"):
@@ -602,7 +625,7 @@ def run(args):
         report = option_report(options)
         lost = [o["label"] for o in report if o["selected"] is False]
         out({"ok": True, "url": url, "http_status": status, "seconds": round(time.time() - run_started, 1),
-             "log": log, "captures": captures, "options": report,
+             "log": log, "captures": captures, "options": report, "failed_requests": net_failures(page),
              **({"warning": f"These options did not stay selected: {lost}. Check the captures before using them."} if lost else {}),
              "next": "Open every captured image and confirm the personalization (name, photo, options) is visible and correct."})
     finally:

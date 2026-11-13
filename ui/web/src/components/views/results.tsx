@@ -6,6 +6,7 @@ import { useState } from "react";
 import { ClipWorkbench } from "@/components/clip-workbench";
 import { DownloadAll } from "@/components/download-parts";
 import { DownloadButton } from "@/components/download-button";
+import { EditPanel } from "@/components/edit-panel";
 import { CaptionEditor } from "@/components/caption-editor";
 import { PaidCallsPanel } from "@/components/paid-calls";
 import { RawLog } from "@/components/raw-log";
@@ -21,6 +22,7 @@ import { cn } from "@/lib/utils";
 
 export function Results({ job, events, onSend, onRefresh }: { job: Job; events: RawEvent[]; onSend: (text: string) => Promise<unknown>; onRefresh?: () => Promise<unknown> | void }) {
   const s = t();
+  const editMode = job.mode === "sample_edit";
   const [revision, setRevision] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
@@ -82,7 +84,8 @@ export function Results({ job, events, onSend, onRefresh }: { job: Job; events: 
         </section>
       ) : null}
 
-      <ClipWorkbench job={job} onSend={onSend} onUpdated={() => { setPicked(null); void onRefresh?.(); }} />
+      {editMode ? <EditPanel job={job} onChanged={() => void onRefresh?.()} />
+        : <ClipWorkbench job={job} onSend={onSend} onUpdated={() => { setPicked(null); void onRefresh?.(); }} />}
 
       <div className="grid gap-8">
         <section aria-labelledby="personalization">
@@ -141,7 +144,7 @@ export function Results({ job, events, onSend, onRefresh }: { job: Job; events: 
         </section>
       )}
 
-      <section aria-labelledby="revision" className="rounded-3xl bg-card p-5 shadow-soft ring-1 ring-foreground/8 sm:p-6">
+      {!editMode && <section aria-labelledby="revision" className="rounded-3xl bg-card p-5 shadow-soft ring-1 ring-foreground/8 sm:p-6">
         <h2 id="revision" className="flex items-center gap-2 font-display text-2xl font-medium"><Wand2 className="size-5 text-brand" aria-hidden />{s.results.revision}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{s.results.revisionHint}</p>
         {sent ? (
@@ -160,16 +163,16 @@ export function Results({ job, events, onSend, onRefresh }: { job: Job; events: 
             {s.results.removeText}
           </Button>
         )}
-      </section>
+      </section>}
 
       <DownloadAll jobId={job.id} />
 
-      <HowMade job={job} events={events} />
+      <HowMade job={job} events={events} editMode={editMode} />
     </div>
   );
 }
 
-function HowMade({ job, events }: { job: Job; events: RawEvent[] }) {
+function HowMade({ job, events, editMode }: { job: Job; events: RawEvent[]; editMode?: boolean }) {
   const s = t();
   const [open, setOpen] = useState(false);
   const report = job.files.find((f) => f.name === "report.md");
@@ -183,14 +186,14 @@ function HowMade({ job, events }: { job: Job; events: RawEvent[] }) {
         <div className="grid gap-6 border-t border-border p-5 lg:grid-cols-[360px_minmax(0,1fr)]">
           <div className="space-y-4">
             <StepTimeline steps={job.steps} currentStep={job.current_step} />
-            <PaidCallsPanel paid={job.paid_calls} compact />
+            {!editMode && <PaidCallsPanel paid={job.paid_calls} compact />}
             {report && (
               <a href={fileUrl(report.local_url)} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-sm font-semibold text-brand hover:underline">
                 <FileText className="size-4" aria-hidden />{s.results.report}
               </a>
             )}
           </div>
-          <RawLog events={events} defaultOpen />
+          {!editMode && <RawLog events={events} defaultOpen />}
         </div>
       </CollapsibleContent>
     </Collapsible>

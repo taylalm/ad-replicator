@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import fnmatch
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -271,15 +272,42 @@ def _asks_user(events: List[dict]) -> bool:
 
 
 # ----------------------------------------------------------------------------- status
+def _main_thread(events: List[dict]) -> Optional[str]:
+    return next((e.get("session_thread_id") for e in events if e.get("type") == "session.thread_status_running"), None)
+
+
+def stalled_index(events: List[dict]) -> Optional[int]:
+    """Index of the session's stop when the model provider used up the platform's retries. Usually that is a
+    session.status_idle with stop_reason retries_exhausted; sometimes only the main thread goes idle
+    (session.thread_status_idle, retries_exhausted) while the session itself still reports running and then nothing
+    more happens (seen 6 Nov 2026). None when the session is not stopped that way."""
+    main = _main_thread(events)
+    for i in range(len(events) - 1, -1, -1):
+        e = events[i]
+        t = e.get("type")
+        if t == "session.thread_status_idle" and e.get("session_thread_id") != main:
+            continue
+        if t in ("session.status_idle", "session.thread_status_idle"):
+            return i if (e.get("stop_reason") or {}).get("type") == "retries_exhausted" else None
+        if t in ("session.status_running", "session.thread_status_running", "user.message", "agent.message",
+                 "agent.tool_use", "agent.tool_result", "span.model_request_start"):
+            return None
+    return None
+
+
 def session_phase(events: List[dict]) -> str:
     """'running' | 'idle' | 'none' from the last session status event."""
     phase = "none"
+    main = _main_thread(events)
     for e in events:
         t = e.get("type")
         if t == "session.status_running":
             phase = "running"
         elif t in ("session.status_idle", "session.status_terminated", "session.deleted"):
             phase = "idle"
+        elif (t == "session.thread_status_idle" and e.get("session_thread_id") == main
+              and (e.get("stop_reason") or {}).get("type") == "retries_exhausted"):
+            phase = "idle"  # the main thread gave up on the model; the session may never send its own idle event
         elif t == "user.message" and phase == "idle":
             # a user message re-activates the session; status_running follows shortly
             phase = "running"
@@ -368,7 +396,8 @@ def _friendly_error(err) -> tuple:
                 "Resolved by compacting the session; the agent now looks at smaller image copies. If it happens again, send 'continue'.", code)
     if "rate" in raw.lower():
         return ("The AI model is temporarily busy (rate-limited).",
-                "The platform retries automatically; if the run stays stuck, send 'continue' in a few minutes.", code)
+                "The site resumes the run by itself, waiting a little longer each time (1 to 10 minutes). Fewer videos "
+                "at the same time helps: every run on the account shares this model's limit.", code)
     return (raw[:300], "The platform reported a problem with the session. The run can be resumed by sending a message; if it keeps failing, start a new video later.", code)
 
 
@@ -468,7 +497,16 @@ def read_paid_calls(path: Path) -> List[dict]:
                     data.append(json.loads(line))
                 except ValueError:
                     continue
-    return [c for c in data if isinstance(c, dict)]
+    calls = [c for c in data if isinstance(c, dict)]
+    dropped = read_json(path.parent.parent / "dropped_calls.json")  # calls taken out of the project (POST .../prune)
+    if isinstance(dropped, list):
+        left = Counter(str(x) for x in dropped)  # the first copies go: a later call may reuse an id
+        for c in list(calls):
+            cid = str(c.get("id") or c.get("task_id") or "")
+            if left[cid] > 0:
+                left[cid] -= 1
+                calls.remove(c)
+    return calls
 
 
 def list_files(files_dir: Path, job_id: str, visible_steps: Optional[set] = None) -> List[dict]:
@@ -622,7 +660,8 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
         cj_list = cj_list + [t for m in cj_list if isinstance(m, dict) for t in (m.get("takes") or []) if isinstance(t, dict)]
     # the takes the newest edit plan uses are what the ad shows: they are the current takes, whatever else says
     in_cut = set()
-    plans = sorted(files_dir.glob("edit_plan*.json"), key=lambda p: p.stat().st_mtime)
+    import store
+    plans = store.edit_plans(files_dir)
     if plans:
         plan_json = read_json(plans[-1]) or {}
         in_cut = {Path(str(c.get("path") or "")).name for c in plan_json.get("clips") or [] if isinstance(c, dict)}
@@ -759,6 +798,8 @@ def derive_assets(files: List[dict], files_dir: Path, job_id: str, visible_steps
                      "clean": url(f"final_edit_v{m.group(1)}_clean.mp4") if f"final_edit_v{m.group(1)}_clean.mp4" in by_name else None}
                     for f in files if (m := re.match(r"^final_edit_v(\d+)\.mp4$", f["name"]))), key=lambda x: x["version"])
     agent_final_url = final_url
+    # a newer agent cut replaced the site's older versions
+    edits = [e for e in edits if e["version"] > ((read_json(files_dir.parent / "job.json") or {}).get("edits_after") or 0)]
     if edits:
         final_url = edits[-1]["url"]
 
@@ -868,6 +909,12 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
             if s["status"] in ("pending", "running"):
                 s["status"] = "done"
                 s["inferred"] = True
+    edit_mode = job.get("mode") == "sample_edit"
+    if edit_mode:  # made without the agent (sample_edit.py): steps and status come from the job's own record
+        import sample_edit
+        parsed, st = sample_edit.derived_steps(job, now_s)
+    if job.get("never_started") and not events:
+        st = {"status": "failed", "awaiting_approval": False, "awaiting_step": None, "phase": "idle"}
     if job.get("example") and not events:
         # a curated example (final ad and its real inputs, no agent event log): show it as a finished job
         st = {"status": "done", "awaiting_approval": False, "awaiting_step": None, "phase": "idle"}
@@ -883,15 +930,25 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
     assets = derive_assets(files, files_dir, job["id"], visible_steps)
     paid = paid_calls_of(files_dir, inputs.get("budget") or {}, visible_steps)
     errors = plain_errors(events, parsed)
+    if job.get("never_started") and not events:
+        errors = [{"kind": "start_failed", "title": "This video never started",
+                   "text": "The agent session was made, but the brief never reached it (for example the sample video "
+                           "could not be attached). Nothing ran and nothing was charged.",
+                   "next": "Delete this card and start a new video.", "at": job.get("created_at"), "resolved": False}] + errors
+    if edit_mode:
+        errors = sample_edit.errors_of(job)
     usage = usage_of(events)
     t_first = ts_seconds(events[0]) if events else None
     t_last = ts_seconds(events[-1]) if events else None
     elapsed = None
     if t_first is not None:
         elapsed = round((now_s if st["status"] in ("running",) else (t_last or now_s)) - t_first)
+    if elapsed is not None and job.get("dropped_file_ids"):  # a pruned log has gaps: count the time it ran
+        from costs import running_intervals
+        elapsed = round(sum(b - a for a, b in running_intervals(events)))
     sample_url = inputs.get("sample_url")
     for cand in ("sample.mp4", "source.mp4"):
-        if (files_dir / cand).exists():
+        if (files_dir / cand).exists() or cand in (job.get("files_index") or {}):  # large files stay in the bucket
             sample_url = f"/api/jobs/{job['id']}/files/{cand}"
             break
     last_agent_message = None
@@ -921,6 +978,11 @@ def derive_job(job: dict, events: List[dict], files_dir: Path, replay_t: Optiona
         "n_events": len(events), "n_events_total": len(full_events), "updated_at": job.get("updated_at"),
         **assets,
     }
+    if edit_mode:
+        out.update(mode="sample_edit", edit=sample_edit.public_state(job))
+        a, b = parse_ts(job.get("created_at")), parse_ts((job.get("edit") or {}).get("finished_at") or (job.get("edit") or {}).get("failed_at"))
+        if a:
+            out["elapsed_s"] = round(((b.timestamp() if b and st["status"] != "running" else now_s)) - a.timestamp())
     if replay_t is not None:
         out["replay"] = {"t": replay_t, **(replay_info(full_events) or {})}
     return out
@@ -975,7 +1037,7 @@ def job_summary(job: dict, derived: dict) -> dict:
     cost = derived.get("cost") or {}
     return {
         "production_s": prod.get("production_s"), "cost_usd": cost.get("total_usd"), "cost_mode": cost.get("mode"),
-        "id": job["id"], "title": job.get("title"), "created_at": job.get("created_at"), "demo": bool(job.get("demo")),
+        "id": job["id"], "title": job.get("title"), "created_at": job.get("created_at"), "demo": bool(job.get("demo")), "mode": job.get("mode"),
         "read_only": bool(job.get("demo") or job.get("example") or job.get("frozen")),
         "status": derived["status"], "thumbnail": derived["thumbnail"], "current_step": derived["current_step"],
         "product_url": (job.get("inputs") or {}).get("product_url"), "elapsed_s": derived["elapsed_s"],

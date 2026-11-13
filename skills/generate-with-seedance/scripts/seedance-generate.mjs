@@ -203,6 +203,11 @@ for (const video of args.reference_videos) {
 }
 
 // Task-type constraints from the Seedance 2.5 tutorial ("Read before use").
+if (firstFrame && references.length) {
+  // The API refuses this pairing (HTTP 400 InvalidParameter; 19 refusals in the 6 Nov 2026 harvest). Refusing here costs
+  // nothing; the still already carries the people and the product, so drop the references or drop the first frame.
+  fail("--first-frame cannot be combined with --reference-image: Seedance refuses the task. Use the first frame alone, or references without a first frame");
+}
 if (firstFrame && ratio !== "adaptive") {
   if (args.ratio) fail("First-frame / first-last-frame tasks require --ratio adaptive");
   ratio = "adaptive";

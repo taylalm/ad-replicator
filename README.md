@@ -34,13 +34,15 @@ sample MP4 + product page + brief
 |---|---|
 | `ugc-video-analyzer` | Breaks the sample down into scenes, on-screen text, people, product moments, call to action and what not to copy (`analysis.json`). |
 | `product-personalizer` | Opens the product page in headless Chromium, reads the personalization options, fills them in (photo, name, colours) and captures the live preview. It never adds to cart, checks out or logs in. |
-| `generate-with-seedream` | Seedream 5.0 pro image generation and editing (AI people, first-frame stills). |
+| `generate-with-seedream` | Seedream 5.0 pro or flash image generation and editing (AI people, first-frame stills). |
 | `ugc-seedance-prompt-craft` | Writes one Seedance 2.5 prompt per clip and checks it against the Seedance rules. It also merges single-product edits into one still (`edit_merge.py`), so each product keeps its own name and artwork. |
-| `generate-with-seedance` | Seedance 2.5 video tasks: 9:16, 480p, audio off. |
-| `video-assembly` | Trims and joins the clips, adds captions in the client's style, the photo-to-product inset with an arrow, the end card and the AI disclaimer. Captions that copy the sample are refused. |
+| `generate-with-seedance` | Seedance video tasks (2.5, 2.0, 2.0 fast, 2.0 mini): 9:16, 480p or 720p, audio off. |
+| `video-assembly` | Trims and joins the clips with transitions, adds captions in the client's style, the photo-to-product inset with an arrow, the end card and the AI disclaimer. Captions that copy the sample are refused. |
 | `ugc-quality-gate` | An independent vision evaluator (`seed-2-0-lite`). `clip_check.py` checks each clip against the product (personalization, spelling, count, physics). `gate.py` scores the final ad on C1-C8 and routes each failure back to the step that fixes it. |
 
 ## Build it in your own BytePlus account
+
+**Quick setup:** after activating the models and creating an API key (steps 1 and below), `python3 tools/setup_account.py --check --build` creates the environment, vault, skills, lessons store and agent in your account, writes the IDs to `.env` and builds the web app package for veFaaS. The steps below do the same by hand.
 
 Region `ap-southeast-1`. API base `https://ark.ap-southeast.bytepluses.com/api/v3`. Auth `Authorization: Bearer $ARK_API_KEY`.
 
@@ -69,7 +71,9 @@ Region `ap-southeast-1`. API base `https://ark.ap-southeast.bytepluses.com/api/v
 
 ## Inputs and limits worth knowing
 
-- **Sample video.** It must be a direct HTTPS MP4 link that opens without signing in, or a file uploaded in the web app. TikTok and other social page links can't be downloaded from the sandbox.
+- **Sample video.** Upload the file, or paste a direct HTTPS MP4 link or a public Facebook link (the web app downloads it). TikTok refuses downloads from a server and YouTube and Instagram often do: upload those samples as files.
+- **Cost and speed.** The New video form offers Economy (Seedance 2.0 mini, Seedream 5.0 flash, 480p), Balanced (2.0 fast, 5.0 pro, 480p) and Best quality (2.5, 720p), plus a limit on retakes per scene. Retakes are the largest part of a video's cost and time.
+- **After delivery, at no model cost.** Pick takes per scene, add your own clips (intro, outro, a filmed scene), choose transitions between scenes, edit captions, and rebuild the ad.
 - **Sandbox network.** Plain HTTP (port 80) is blocked and HTTPS works. The skills switch apt to an HTTPS mirror.
 - **Seedance audio.** Seedance adds audio unless told not to, and generated audio can trigger copyright rejections. The skills always send `generate_audio: false`.
 - **Seedream parameters.** Seedream 5.0 pro rejects `sequential_image_generation`, so the skills leave it out.

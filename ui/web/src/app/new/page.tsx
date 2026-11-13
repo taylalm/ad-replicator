@@ -14,13 +14,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError, type Reference, type SampleLink, type ValidateResult } from "@/lib/api";
 import { fmtBytes } from "@/lib/format";
 import { t } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { cn, SHOWCASE } from "@/lib/utils";
+import { Field, Section, Segmented } from "@/components/form-bits";
 
 const LENGTHS = [15, 20, 30];
 const RESOLUTIONS = ["480p", "720p"] as const;
 const CAPTION_MODES = ["full", "cta_only", "none"] as const;
 const VIDEO_MODELS = ["seedance-2.5", "seedance-2.0", "seedance-2.0-fast", "seedance-2.0-mini"] as const;
 const IMAGE_MODELS = ["seedream-5.0-pro", "seedream-5.0-flash"] as const;
+const TRANSITIONS = ["mix", "dissolve", "cut", "sample"] as const;
+const RETAKES = [1, 2, 0] as const;  // 0 = no limit
+// one click sets the models, the resolution and the retake limit; every control below can still be changed after
+const PRESETS = {
+  economy: { video: "seedance-2.0-mini", image: "seedream-5.0-flash", res: "480p", retakes: 1 },
+  balanced: { video: "seedance-2.0-fast", image: "seedream-5.0-pro", res: "480p", retakes: 1 },
+  best: { video: "seedance-2.5", image: "seedream-5.0-pro", res: "720p", retakes: 2 },
+} as const;
+type Preset = keyof typeof PRESETS;
 const SLIDER_MAX = { seedream: 12, seedance: 12, evaluator: 6 };
 const NO_CAP = 0;
 const DEMO_JOB_ID = process.env.NEXT_PUBLIC_DEMO_JOB_ID || "caseB";
@@ -32,6 +42,7 @@ const DEMO_DEFAULTS = {
 };
 
 export default function NewJobPage() {
+  if (SHOWCASE) return <p className="mx-auto max-w-xl rounded-2xl bg-muted p-6 text-sm">{t().app.showcaseOnly}</p>;
   return (
     <Suspense fallback={null}>
       <NewJobForm />
@@ -50,10 +61,20 @@ function NewJobForm() {
   const [product, setProduct] = useState(() => (demo ? DEMO_DEFAULTS.product : ""));
   const [req, setReq] = useState("");
   const [length, setLength] = useState(20);
-  const [res, setRes] = useState<(typeof RESOLUTIONS)[number]>("480p");
+  const [res, setRes] = useState<(typeof RESOLUTIONS)[number]>(PRESETS.balanced.res);
   const [captions, setCaptions] = useState<(typeof CAPTION_MODES)[number]>("full");
-  const [videoModel, setVideoModel] = useState<(typeof VIDEO_MODELS)[number]>("seedance-2.5");
-  const [imageModel, setImageModel] = useState<(typeof IMAGE_MODELS)[number]>("seedream-5.0-pro");
+  const [videoModel, setVideoModel] = useState<(typeof VIDEO_MODELS)[number]>(PRESETS.balanced.video);
+  const [imageModel, setImageModel] = useState<(typeof IMAGE_MODELS)[number]>(PRESETS.balanced.image);
+  const [transitions, setTransitions] = useState<(typeof TRANSITIONS)[number]>("mix");
+  const [retakes, setRetakes] = useState<(typeof RETAKES)[number]>(PRESETS.balanced.retakes);
+  const preset = (Object.keys(PRESETS) as Preset[]).find((k) => {
+    const p = PRESETS[k];
+    return p.video === videoModel && p.image === imageModel && p.res === res && p.retakes === retakes;
+  }) ?? "";
+  const applyPreset = (k: Preset) => {
+    const p = PRESETS[k];
+    setVideoModel(p.video); setImageModel(p.image); setRes(p.res); setRetakes(p.retakes);
+  };
   const [budget, setBudget] = useState({ seedream: NO_CAP, seedance: NO_CAP, evaluator: 3 });
   const [refs, setRefs] = useState<Array<Reference & { pending?: boolean; error?: string; localName: string }>>([]);
   const [autoApprove, setAutoApprove] = useState(false);
@@ -85,14 +106,18 @@ function NewJobForm() {
     if (pollTimer.current) clearTimeout(pollTimer.current);
     socialFor.current = url;
     setSocial({ id: "", state: "starting", progress: 0, platform: "", url, title: null, duration: null, size: null, ref: null, error: null });
-    const poll = async (id: string) => {
+    // several server instances answer in turn: one that has not seen this download yet says "not known" for a moment,
+    // so a failed status request is asked again (about 30 s in a row) before the link counts as failed
+    const poll = async (id: string, misses = 0) => {
       try {
         const st = await api.sampleLinkStatus(id);
         if (socialFor.current !== url) return;
         setSocial(st);
         if (st.state !== "done" && st.state !== "failed") pollTimer.current = setTimeout(() => void poll(id), 1500);
       } catch (e) {
-        if (socialFor.current === url) setSocial((cur) => cur && { ...cur, state: "failed", error: e instanceof Error ? e.message : String(e) });
+        if (socialFor.current !== url) return;
+        if (misses < 20) pollTimer.current = setTimeout(() => void poll(id, misses + 1), 1500);
+        else setSocial((cur) => cur && { ...cur, state: "failed", error: e instanceof Error ? e.message : String(e) });
       }
     };
     try {
@@ -155,7 +180,7 @@ function NewJobForm() {
         sample_url: sampleMode === "link" && !socialRef ? sample.trim() : "",
         sample_upload: sampleMode === "upload" && sampleFile.ref ? { file_id: sampleFile.ref.file_id, filename: sampleFile.ref.filename, local_name: sampleFile.ref.local_name }
           : socialRef ? { file_id: socialRef.file_id, filename: socialRef.filename, local_name: socialRef.local_name, source_url: socialRef.source_url } : null,
-        budget, options: { length_s: length, resolution: res, captions, video_model: videoModel, image_model: imageModel }, auto_approve: autoApprove, step_approve: stepApprove,
+        budget, options: { length_s: length, resolution: res, captions, video_model: videoModel, image_model: imageModel, transitions, retakes }, auto_approve: autoApprove, step_approve: stepApprove,
         references: refs.filter((r) => !r.pending && !r.error).map(({ file_id, filename, mount_name, note }) => ({ file_id, filename, mount_name, note })),
       });
       router.push(`/job?id=${job.id}`);
@@ -175,6 +200,12 @@ function NewJobForm() {
       <header>
         <h1 className="font-display text-4xl font-medium tracking-tight sm:text-5xl">{s.newJob.title}</h1>
         <p className="mt-3 max-w-xl text-[15px] leading-relaxed text-muted-foreground">{s.newJob.subtitle}</p>
+        {!demo && (
+          <p className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-2xl bg-muted px-4 py-3 text-sm">
+            <span>{s.edit.newBanner}</span>
+            <Link href="/edit" className="font-semibold text-brand hover:underline">{s.edit.newBannerLink} →</Link>
+          </p>
+        )}
         {demo && (
           <p className="mt-4 flex items-start gap-2 rounded-2xl bg-brand-soft px-4 py-3 text-sm" role="status">
             <Sparkles className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden />{s.newJob.demoBanner}
@@ -278,6 +309,10 @@ function NewJobForm() {
       </Section>
 
       <Section title={s.newJob.sections.output}>
+        <div className="mb-6">
+          <Segmented label={s.newJob.preset.label} options={(Object.keys(PRESETS) as Preset[]).map((k) => ({ v: k, l: s.newJob.preset[k] }))} value={preset} onChange={(v) => applyPreset(v as Preset)} />
+          <p className="mt-2 text-xs text-muted-foreground">{preset ? s.newJob.preset.hints[preset] : s.newJob.preset.custom}</p>
+        </div>
         <div className="grid gap-6 sm:grid-cols-2">
           <Segmented label={s.newJob.length.label} options={LENGTHS.map((l) => ({ v: String(l), l: `${l} ${s.newJob.length.unit}` }))} value={String(length)} onChange={(v) => setLength(Number(v))} />
           <Segmented label={s.newJob.resolution.label} options={RESOLUTIONS.map((r) => ({ v: r, l: r }))} value={res} onChange={(v) => setRes(v as (typeof RESOLUTIONS)[number])} />
@@ -291,6 +326,16 @@ function NewJobForm() {
           <Segmented label={s.newJob.models.image} options={IMAGE_MODELS.map((m) => ({ v: m, l: s.newJob.models.names[m] }))} value={imageModel} onChange={(v) => setImageModel(v as (typeof IMAGE_MODELS)[number])} />
         </div>
         <p className="mt-2 text-xs text-muted-foreground">{s.newJob.models.help}</p>
+        <div className="mt-6 grid gap-6 sm:grid-cols-2">
+          <div>
+            <Segmented label={s.newJob.transitions.label} options={TRANSITIONS.map((m) => ({ v: m, l: s.newJob.transitions[m] }))} value={transitions} onChange={(v) => setTransitions(v as (typeof TRANSITIONS)[number])} />
+            <p className="mt-2 text-xs text-muted-foreground">{s.newJob.transitions.help}</p>
+          </div>
+          <div>
+            <Segmented label={s.newJob.retakes.label} options={RETAKES.map((n) => ({ v: String(n), l: n ? String(n) : s.newJob.retakes.noLimit }))} value={String(retakes)} onChange={(v) => setRetakes(Number(v) as (typeof RETAKES)[number])} />
+            <p className="mt-2 text-xs text-muted-foreground">{s.newJob.retakes.help}</p>
+          </div>
+        </div>
       </Section>
 
       <Section title={s.newJob.references.label}>
@@ -404,47 +449,5 @@ function NewJobForm() {
         </DialogContent>
       </Dialog>
     </form>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="rounded-3xl bg-card p-5 shadow-soft ring-1 ring-foreground/8 sm:p-7">
-      <h2 className="mb-5 font-display text-xl font-medium">{title}</h2>
-      <div className="space-y-5">{children}</div>
-    </section>
-  );
-}
-
-function Field({ label, help, error, id, children }: { label: string; help?: string; error?: string; id: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <Label htmlFor={id} className="mb-1.5 text-sm font-semibold">{label}</Label>
-      {children}
-      {help && !error && <p id={`${id}-help`} className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{help}</p>}
-      {error && <p className="mt-1.5 text-sm text-danger" role="alert">{error}</p>}
-    </div>
-  );
-}
-
-function Segmented({ label, options, value, onChange }: { label: string; options: { v: string; l: string }[]; value: string; onChange: (v: string) => void }) {
-  return (
-    <div>
-      <span className="mb-1.5 block text-sm font-semibold">{label}</span>
-      <div role="radiogroup" aria-label={label} className="inline-flex rounded-xl bg-muted p-1">
-        {options.map((o) => (
-          <button
-            key={o.v}
-            type="button"
-            role="radio"
-            aria-checked={value === o.v}
-            onClick={() => onChange(o.v)}
-            className={cn("h-9 rounded-lg px-4 text-sm font-semibold outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50", value === o.v ? "bg-card text-foreground shadow-soft" : "text-muted-foreground hover:text-foreground")}
-          >
-            {o.l}
-          </button>
-        ))}
-      </div>
-    </div>
   );
 }

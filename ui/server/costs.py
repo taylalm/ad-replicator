@@ -245,7 +245,8 @@ def _first_mention(events: List[dict], token: str) -> Optional[float]:
 
 def delivered_clips(files_dir: Path) -> List[str]:
     """Unique video files used by the newest edit plan (the delivered cut)."""
-    plans = sorted(files_dir.glob("edit_plan*.json"), key=lambda p: p.stat().st_mtime)
+    import store
+    plans = store.edit_plans(files_dir)
     if not plans:
         return []
     try:

@@ -40,6 +40,8 @@ DEFAULT_BASE = "https://ark.ap-southeast.bytepluses.com/api/v3"
 # Your agent, environment and vault come only from these environment variables, the repository's .env file, or the
 # --agent-id / --env-id / --vault-id options. There are no built-in ids: a missing one stops the command with a clear message.
 ID_VARS = ("MA_AGENT_ID", "MA_ENV_ID", "MA_VAULT_ID")
+# optional: memory stores (comma separated memstore-... ids) mounted on every session the site creates; read from .env too
+OPTIONAL_VARS = ("MA_MEMORY_STORE_IDS", "ASSET_GROUP_ID")  # ASSET_GROUP_ID: the site's "edit the sample" mode (ui/server/assets_lib.py)
 TERMINAL_EVENTS = {"session.status_idle", "session.status_terminated", "session.deleted"}
 REPO = Path(__file__).resolve().parent.parent
 
@@ -54,7 +56,7 @@ def load_settings_file(path=SETTINGS_FILE):
         return
     for line in path.read_text().splitlines():
         m = re.match(r"^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$", line)
-        if not m or m.group(1) not in ID_VARS:
+        if not m or m.group(1) not in ID_VARS + OPTIONAL_VARS:
             continue
         value = m.group(2)
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
@@ -72,6 +74,11 @@ class MissingSetting(Exception):
 def configured_id(var):
     """The id in environment variable `var`, or None when it is unset or empty."""
     return (os.environ.get(var) or "").strip() or None
+
+
+def configured_memory_stores():
+    """Memory stores to mount on new sessions, from MA_MEMORY_STORE_IDS (comma separated); [] when unset."""
+    return [s.strip() for s in (os.environ.get("MA_MEMORY_STORE_IDS") or "").split(",") if s.strip()]
 
 
 def missing_ids():
@@ -96,6 +103,14 @@ def resolve_api_key() -> str:
     key = os.environ.get("ARK_API_KEY")
     if key:
         return key
+    # arkcli 1.0.33+ keeps the key of the signed-in account in ~/.arkcli-bp/.env (VOLCENGINE_ARK_API_KEY); it is
+    # refreshed by `arkcli auth login`, while config.yaml may still hold an older, deactivated key
+    env_file = Path.home() / ".arkcli-bp" / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            k, sep, v = line.strip().partition("=")
+            if sep and k.strip() == "VOLCENGINE_ARK_API_KEY" and v.strip().strip("'\""):
+                return v.strip().strip("'\"")
     cfg = Path.home() / ".arkcli-bp" / "config.yaml"
     if cfg.exists():
         default_profile = None
@@ -153,9 +168,10 @@ class Client:
         if not raw:
             return {}
         try:
-            return json.loads(raw)
+            parsed = json.loads(raw)
         except json.JSONDecodeError:
             return {"raw": raw.decode(errors="replace")}
+        return parsed if parsed is not None else {}  # GET /files answers a literal null for a session without files yet
 
     def get(self, path, **params):
         return self._request("GET", path, params=params or None)
@@ -233,17 +249,89 @@ class Client:
         return self.post_multipart(f"/skills/{skill_id}/versions", fields, files)
 
     # ----------------------------------------------------------------- sessions
-    def create_session(self, agent_id=None, env_id=None, vault_ids=None, title=None, agent_version=None):
+    def create_session(self, agent_id=None, env_id=None, vault_ids=None, title=None, agent_version=None,
+                       memory_store_ids=None, compact_threshold=None, compact_instructions=None):
+        """memory_store_ids: memory stores mounted read-only at /mnt/memory/<store id>/ (docs: persistent-memory;
+        they can only be mounted at creation, at most 10 per session). compact_threshold: this session's context
+        compaction threshold in tokens (>= 50000; docs: context-compaction, `agent_with_overrides`); None keeps the
+        agent's setting."""
         agent_id = require_id(agent_id, "MA_AGENT_ID")
         env_id = require_id(env_id, "MA_ENV_ID")
         vault_ids = [v for v in (vault_ids or []) if v] or [require_id(None, "MA_VAULT_ID")]
         agent: dict | str = agent_id
         if agent_version is not None:
             agent = {"id": agent_id, "version": agent_version}
+        if compact_threshold is not None:
+            policy = {"type": "compaction", "compact_threshold": int(compact_threshold)}
+            if compact_instructions:
+                policy["instructions"] = compact_instructions
+            agent = {"type": "agent_with_overrides", "id": agent_id, "context_management": [policy]}
+            if agent_version is not None:
+                agent["version"] = agent_version
         body = {"agent": agent, "environment_id": env_id, "vault_ids": list(vault_ids)}
         if title:
             body["title"] = title
+        if memory_store_ids is None:
+            memory_store_ids = configured_memory_stores()
+        stores = [s for s in memory_store_ids if s]
+        if stores:
+            body["resources"] = [{"type": "memory_store", "memory_store_id": s} for s in stores]
         return self.post("/sessions", body)
+
+    # ----------------------------------------------------------------- memory stores (docs: persistent-memory, 7 Nov 2026)
+    def list_memory_stores(self):
+        return self.get("/memory_stores")
+
+    def create_memory_store(self, name: str, description: str | None = None):
+        body = {"name": name}
+        if description:
+            body["description"] = description  # shown to the agent: what the store holds and when to use it
+        return self.post("/memory_stores", body)
+
+    def delete_memory_store(self, store_id: str):
+        return self.delete(f"/memory_stores/{store_id}")
+
+    def list_memories(self, store_id: str, path_prefix: str = "/", depth: int | None = None, limit: int = 100):
+        """Returns every memory under path_prefix (the API pages; `type` is file or directory, `path`, `id`)."""
+        items, page = [], None
+        while True:
+            params = {"path_prefix": path_prefix, "order_by": "path", "limit": limit}
+            if depth is not None:
+                params["depth"] = depth
+            if page:
+                params["page_token"] = page
+            d = self.get(f"/memory_stores/{store_id}/memories", **params)
+            items += d.get("data", [])
+            page = d.get("next_page_token") if d.get("has_more") else None
+            if not page:
+                return items
+
+    def get_memory(self, store_id: str, memory_id: str):
+        return self.get(f"/memory_stores/{store_id}/memories/{memory_id}")
+
+    def create_memory(self, store_id: str, path: str, content: str):
+        """Fails if the path exists (the API never overwrites on create); 100 KiB max per memory, 2,000 per store."""
+        return self.post(f"/memory_stores/{store_id}/memories", {"path": path, "content": content})
+
+    def update_memory(self, store_id: str, memory_id: str, content: str | None = None, path: str | None = None):
+        body = {k: v for k, v in (("content", content), ("path", path)) if v is not None}
+        return self.post(f"/memory_stores/{store_id}/memories/{memory_id}", body)
+
+    def delete_memory(self, store_id: str, memory_id: str):
+        return self.delete(f"/memory_stores/{store_id}/memories/{memory_id}")
+
+    def put_memory(self, store_id: str, path: str, content: str, existing: dict | None = None):
+        """Create or update one memory so that `path` holds `content`; `existing` maps path -> memory (from
+        list_memories) to save a listing call. Returns (memory, "created" | "updated" | "unchanged")."""
+        if existing is None:
+            existing = {m["path"]: m for m in self.list_memories(store_id) if m.get("type") != "directory"}
+        cur = existing.get(path)
+        if cur is None:
+            return self.create_memory(store_id, path, content), "created"
+        import hashlib
+        if cur.get("content_sha256") == hashlib.sha256(content.encode()).hexdigest():
+            return cur, "unchanged"
+        return self.update_memory(store_id, cur["id"], content=content), "updated"
 
     def get_session(self, session_id):
         return self.get(f"/sessions/{session_id}")

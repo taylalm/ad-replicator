@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Loader2, Send } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ClipWorkbench } from "@/components/clip-workbench";
+import { EditPanel } from "@/components/edit-panel";
 import { ErrorList } from "@/components/error-list";
 import { FileThumb } from "@/components/file-thumb";
 import { PaidCallsPanel } from "@/components/paid-calls";
@@ -34,8 +35,9 @@ function groupFiles(allFiles: JobFile[], withClips: boolean): Group[] {
   return groups.filter((g) => g.files.length);
 }
 
-export function LiveProgress({ job, events, onSend }: { job: Job; events: RawEvent[]; onSend: (text: string) => Promise<unknown> }) {
+export function LiveProgress({ job, events, onSend, onRefresh }: { job: Job; events: RawEvent[]; onSend: (text: string) => Promise<unknown>; onRefresh?: () => void }) {
   const s = t();
+  const editMode = job.mode === "sample_edit";
   const groups = useMemo(() => groupFiles(job.files, job.clips.length > 0), [job.files, job.clips.length]);
   const [reply, setReply] = useState("");
   const [busy, setBusy] = useState(false);
@@ -51,16 +53,18 @@ export function LiveProgress({ job, events, onSend }: { job: Job; events: RawEve
     <div className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
       <aside className="space-y-4">
         <div className="rounded-3xl bg-card p-5 shadow-soft ring-1 ring-foreground/8">
-          {job.current_step && <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-brand">{s.live.stepOf(job.current_step)}</p>}
+          {job.current_step && <p className="mb-4 text-xs font-semibold uppercase tracking-wide text-brand">{editMode ? s.edit.stepOf(job.current_step) : s.live.stepOf(job.current_step)}</p>}
           <StepTimeline steps={job.steps} currentStep={job.current_step} />
         </div>
-        <PaidCallsPanel paid={job.paid_calls} compact />
+        {!editMode && <PaidCallsPanel paid={job.paid_calls} compact />}
       </aside>
 
       <div className="space-y-6">
         <ErrorList errors={job.errors} />
 
-        {stopped && (
+        {editMode && <EditPanel job={job} onChanged={onRefresh} />}
+
+        {stopped && !editMode && (
           <section className="rounded-3xl bg-card p-5 ring-1 ring-foreground/8">
             <h2 className="font-display text-xl font-medium">{s.live.stoppedTitle}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{s.live.stoppedBody}</p>
@@ -105,7 +109,7 @@ export function LiveProgress({ job, events, onSend }: { job: Job; events: RawEve
           )}
         </section>
 
-        <ClipWorkbench job={job} onSend={onSend} />
+        {!editMode && <ClipWorkbench job={job} onSend={onSend} />}
 
         {job.quality.length > 0 && (
           <section aria-labelledby="live-scorecard" className="rounded-3xl bg-card p-5 ring-1 ring-foreground/8">
@@ -115,7 +119,7 @@ export function LiveProgress({ job, events, onSend }: { job: Job; events: RawEve
           </section>
         )}
 
-        <RawLog events={events} />
+        {!editMode && <RawLog events={events} />}
       </div>
     </div>
   );
